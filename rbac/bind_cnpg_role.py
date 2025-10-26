@@ -111,18 +111,25 @@ class CNPGRoleBindingManager:
                 }
             }
 
-            if self.dry_run:
-                print(f"\n[DRY RUN] Would create ServiceAccount: {namespace}/{name}")
-                return True
-
             # Check if already exists
+            sa_exists = False
             try:
                 self.core_v1.read_namespaced_service_account(name, namespace)
-                print(f"✓ ServiceAccount {namespace}/{name} already exists")
-                return True
+                sa_exists = True
             except ApiException as e:
                 if e.status != 404:
                     raise
+
+            if sa_exists:
+                if self.dry_run:
+                    print(f"\n[DRY RUN] ServiceAccount {namespace}/{name} already exists - no action needed")
+                else:
+                    print(f"✓ ServiceAccount {namespace}/{name} already exists")
+                return True
+
+            if self.dry_run:
+                print(f"\n[DRY RUN] Would create ServiceAccount: {namespace}/{name}")
+                return True
 
             # Create the ServiceAccount
             self.core_v1.create_namespaced_service_account(namespace, sa)
@@ -312,6 +319,19 @@ def bind_cnpg_role(
     ):
         success = False
 
+    # IMPORTANT: The 'edit' role only has write permissions (create, delete, patch, update).
+    # We need to also bind to the 'view' role to get read permissions (get, list, watch).
+    if cnpg_role == "edit":
+        print("Note: 'edit' role only has write permissions. Adding 'view' role for read access...")
+        cnpg_view_binding_name = f"{service_account}-cnpg-view-binding"
+        if not manager.create_cluster_role_binding(
+            cnpg_view_binding_name,
+            service_account,
+            namespace,
+            CNPG_ROLES["view"]  # Also bind to cnpg-cloudnative-pg-view
+        ):
+            success = False
+
     # Optionally create binding to k8s view role
     if include_view_binding:
         view_binding_name = f"{service_account}-view-binding"
@@ -329,7 +349,11 @@ def bind_cnpg_role(
     elif success:
         print("✓ Role binding setup completed successfully!")
         print(f"\nServiceAccount '{service_account}' in namespace '{namespace}' now has:")
-        print(f"  - CloudNativePG {cnpg_role} permissions ({cnpg_cluster_role})")
+        if cnpg_role == "edit":
+            print(f"  - CloudNativePG {cnpg_role} permissions (write: {cnpg_cluster_role})")
+            print(f"  - CloudNativePG view permissions (read: {CNPG_ROLES['view']})")
+        else:
+            print(f"  - CloudNativePG {cnpg_role} permissions ({cnpg_cluster_role})")
         if include_view_binding:
             print(f"  - Kubernetes view permissions (pods, logs, events)")
         print("\nNext steps:")
@@ -386,12 +410,17 @@ def unbind_cnpg_role(
     manager = CNPGRoleBindingManager(dry_run=dry_run)
     success = True
 
-    # Delete CNPG role binding
+    # Delete CNPG role binding (edit or admin)
     cnpg_binding_name = f"{service_account}-cnpg-binding"
     if not manager.delete_cluster_role_binding(cnpg_binding_name):
         success = False
 
-    # Delete view role binding if it was created
+    # Delete CNPG view binding (created when using 'edit' role)
+    cnpg_view_binding_name = f"{service_account}-cnpg-view-binding"
+    if not manager.delete_cluster_role_binding(cnpg_view_binding_name):
+        success = False
+
+    # Delete k8s view role binding if it was created
     if include_view_binding:
         view_binding_name = f"{service_account}-view-binding"
         if not manager.delete_cluster_role_binding(view_binding_name):
