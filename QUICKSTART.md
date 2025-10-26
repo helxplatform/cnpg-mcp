@@ -22,14 +22,22 @@ kubectl get deployment -n cnpg-system cnpg-controller-manager
 
 ## Step 2: Set Up RBAC Permissions
 
+The CloudNativePG helm chart already created the necessary ClusterRoles. You just need to create a ServiceAccount and bind it to these roles:
+
 ```bash
 kubectl apply -f rbac.yaml
 ```
 
 Verify:
 ```bash
+# Check service account was created
 kubectl get serviceaccount cnpg-mcp-server
-kubectl get clusterrole cnpg-mcp-role
+
+# Verify CloudNativePG roles exist (created by helm)
+kubectl get clusterroles | grep cnpg
+
+# Test permissions
+kubectl auth can-i get clusters.postgresql.cnpg.io --as=system:serviceaccount:default:cnpg-mcp-server
 ```
 
 ## Step 3: Install Python Dependencies
@@ -127,13 +135,15 @@ export KUBECONFIG=~/.kube/config
 
 ### "Forbidden: User cannot list clusters"
 
-Apply RBAC permissions:
+Ensure CloudNativePG roles exist and RBAC is configured:
 ```bash
-kubectl apply -f rbac.yaml
-```
+# Verify CloudNativePG helm chart created the roles
+kubectl get clusterroles | grep cnpg
 
-Verify:
-```bash
+# Apply RBAC permissions (ServiceAccount + RoleBindings)
+kubectl apply -f rbac.yaml
+
+# Verify permissions
 kubectl auth can-i list clusters.postgresql.cnpg.io --as=system:serviceaccount:default:cnpg-mcp-server
 ```
 

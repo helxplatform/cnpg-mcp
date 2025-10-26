@@ -42,51 +42,29 @@ This MCP server enables LLMs to interact with PostgreSQL clusters managed by the
 
 ## RBAC Setup
 
-The MCP server needs permissions to interact with CloudNativePG resources. Create a service account with appropriate permissions:
+The MCP server needs permissions to interact with CloudNativePG resources. The CloudNativePG helm chart automatically creates ClusterRoles (`cnpg-cloudnative-pg-edit`, `cnpg-cloudnative-pg-view`), so you only need to create a ServiceAccount and bind it to these existing roles:
 
-```yaml
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: cnpg-mcp-server
-  namespace: default
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: cnpg-mcp-role
-rules:
-  # CloudNativePG cluster resources
-  - apiGroups: ["postgresql.cnpg.io"]
-    resources: ["clusters", "backups", "scheduledbackups"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # For reading logs and events
-  - apiGroups: [""]
-    resources: ["pods", "pods/log", "events"]
-    verbs: ["get", "list", "watch"]
-  # For managing secrets (connection credentials)
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["get", "list", "create", "update"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: cnpg-mcp-binding
-subjects:
-  - kind: ServiceAccount
-    name: cnpg-mcp-server
-    namespace: default
-roleRef:
-  kind: ClusterRole
-  name: cnpg-mcp-role
-  apiGroup: rbac.authorization.k8s.io
-```
-
-Apply the RBAC configuration:
 ```bash
+# Apply the RBAC configuration (ServiceAccount + RoleBindings)
 kubectl apply -f rbac.yaml
 ```
+
+This creates:
+- A `cnpg-mcp-server` ServiceAccount
+- ClusterRoleBinding to `cnpg-cloudnative-pg-edit` (for managing clusters)
+- ClusterRoleBinding to `view` (for reading pods, events, logs)
+
+Verify the setup:
+```bash
+# Check the service account was created
+kubectl get serviceaccount cnpg-mcp-server
+
+# Verify permissions
+kubectl auth can-i get clusters.postgresql.cnpg.io --as=system:serviceaccount:default:cnpg-mcp-server
+kubectl auth can-i create clusters.postgresql.cnpg.io --as=system:serviceaccount:default:cnpg-mcp-server
+```
+
+**For read-only access:** Change `cnpg-cloudnative-pg-edit` to `cnpg-cloudnative-pg-view` in rbac.yaml
 
 ## Configuration
 

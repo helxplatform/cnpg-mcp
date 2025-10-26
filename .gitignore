@@ -1,0 +1,19 @@
+*.swp
+*.swo
+.vscode
+docs
+nohup.out
+output
+*~
+*/__pycache__/*
+*.pyc
+auth
+
+# OS generated files #
+######################
+.DS_Store
+.DS_Store?
+._*
+
+# Local build config
+make.env

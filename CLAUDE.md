@@ -56,14 +56,44 @@ pip install 'mcp[sse]' starlette uvicorn python-multipart
 
 ### RBAC Setup
 
-```bash
-# Apply RBAC permissions for the server
-kubectl apply -f rbac.yaml
+**Important:** CloudNativePG helm chart automatically creates ClusterRoles. You only need to create ServiceAccount + RoleBindings.
 
-# Verify permissions
-kubectl auth can-i get clusters.postgresql.cnpg.io
-kubectl auth can-i list clusters.postgresql.cnpg.io
+**Option 1: Using Python script (recommended):**
+```bash
+# Install dependencies (if not already installed)
+pip install -r requirements.txt
+
+# Create ServiceAccount and bind to edit role
+python rbac/bind_cnpg_role.py --namespace default --service-account cnpg-mcp-server
+
+# For read-only access
+python rbac/bind_cnpg_role.py --namespace default --service-account cnpg-mcp-server --role view
+
+# Dry run to see what would be created
+python rbac/bind_cnpg_role.py --dry-run
 ```
+
+**Option 2: Using kubectl:**
+```bash
+# Apply RBAC configuration (creates ServiceAccount and binds to existing cnpg roles)
+kubectl apply -f rbac.yaml
+```
+
+**Verify setup:**
+```bash
+# Verify the helm-created roles exist
+kubectl get clusterroles | grep cnpg
+# Should show: cnpg-cloudnative-pg, cnpg-cloudnative-pg-edit, cnpg-cloudnative-pg-view
+
+# Verify permissions for the service account
+kubectl auth can-i get clusters.postgresql.cnpg.io --as=system:serviceaccount:default:cnpg-mcp-server
+kubectl auth can-i create clusters.postgresql.cnpg.io --as=system:serviceaccount:default:cnpg-mcp-server
+```
+
+**Available CloudNativePG roles:**
+- `cnpg-cloudnative-pg-edit`: Full edit access (recommended, used by default)
+- `cnpg-cloudnative-pg-view`: Read-only access
+- `cnpg-cloudnative-pg`: Full admin access
 
 ## Architecture
 
@@ -251,7 +281,10 @@ kubectl get secret <cluster-name>-app -o jsonpath='{.data.password}' | base64 -d
 
 ### Security Considerations
 
-- RBAC permissions defined in rbac.yaml - follow principle of least privilege
+- **RBAC**: Uses CloudNativePG's built-in roles (no custom ClusterRoles needed)
+  - rbac.yaml binds to `cnpg-cloudnative-pg-edit` by default
+  - For read-only, change to `cnpg-cloudnative-pg-view`
+  - Follow principle of least privilege
 - Never log or expose database credentials
 - All inputs validated via Pydantic models
 - Consider namespace isolation for multi-tenant scenarios

@@ -1,85 +1,43 @@
 ---
+# Service Account for the MCP server
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: cnpg-mcp-server
   namespace: default
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: cnpg-mcp-role
-rules:
-  # CloudNativePG cluster resources
-  - apiGroups: ["postgresql.cnpg.io"]
-    resources: ["clusters", "backups", "scheduledbackups", "poolers"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  
-  # For reading status and events
-  - apiGroups: [""]
-    resources: ["events"]
-    verbs: ["get", "list", "watch"]
-  
-  # For reading logs
-  - apiGroups: [""]
-    resources: ["pods", "pods/log"]
-    verbs: ["get", "list", "watch"]
-  
-  # For managing secrets (connection credentials)
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["get", "list", "create", "update", "patch"]
-  
-  # For reading persistent volume claims
-  - apiGroups: [""]
-    resources: ["persistentvolumeclaims"]
-    verbs: ["get", "list", "watch"]
-  
-  # For reading services (connection endpoints)
-  - apiGroups: [""]
-    resources: ["services"]
-    verbs: ["get", "list", "watch"]
 
 ---
+# ClusterRoleBinding to use CloudNativePG's built-in edit role
+# The CloudNativePG helm chart creates these roles automatically:
+#   - cnpg-cloudnative-pg (full admin)
+#   - cnpg-cloudnative-pg-edit (edit access)
+#   - cnpg-cloudnative-pg-view (read-only)
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: cnpg-mcp-binding
+  name: cnpg-mcp-server-binding
 subjects:
   - kind: ServiceAccount
     name: cnpg-mcp-server
     namespace: default
 roleRef:
   kind: ClusterRole
-  name: cnpg-mcp-role
+  name: cnpg-cloudnative-pg-edit  # Use edit role for full MCP capabilities
   apiGroup: rbac.authorization.k8s.io
+
 ---
-# Optional: Role for namespace-scoped operations
-# Use this instead of ClusterRole if you want to limit to specific namespaces
+# Additional ClusterRoleBinding for viewing pods/logs/events
+# The cnpg roles only cover postgresql.cnpg.io resources,
+# so we need additional permissions for core resources
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRoleBinding
 metadata:
-  name: cnpg-mcp-role
-  namespace: production
-rules:
-  - apiGroups: ["postgresql.cnpg.io"]
-    resources: ["clusters", "backups", "scheduledbackups", "poolers"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: [""]
-    resources: ["events", "pods", "pods/log", "secrets", "persistentvolumeclaims", "services"]
-    verbs: ["get", "list", "watch"]
----
-# Optional: RoleBinding for namespace-scoped access
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: cnpg-mcp-binding
-  namespace: production
+  name: cnpg-mcp-server-view-binding
 subjects:
   - kind: ServiceAccount
     name: cnpg-mcp-server
     namespace: default
 roleRef:
-  kind: Role
-  name: cnpg-mcp-role
+  kind: ClusterRole
+  name: view  # Built-in Kubernetes view role for pods, events, etc.
   apiGroup: rbac.authorization.k8s.io
