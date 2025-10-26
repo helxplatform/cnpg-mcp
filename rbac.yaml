@@ -1,0 +1,85 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cnpg-mcp-server
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cnpg-mcp-role
+rules:
+  # CloudNativePG cluster resources
+  - apiGroups: ["postgresql.cnpg.io"]
+    resources: ["clusters", "backups", "scheduledbackups", "poolers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  
+  # For reading status and events
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  
+  # For reading logs
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  
+  # For managing secrets (connection credentials)
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "create", "update", "patch"]
+  
+  # For reading persistent volume claims
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch"]
+  
+  # For reading services (connection endpoints)
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cnpg-mcp-binding
+subjects:
+  - kind: ServiceAccount
+    name: cnpg-mcp-server
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: cnpg-mcp-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# Optional: Role for namespace-scoped operations
+# Use this instead of ClusterRole if you want to limit to specific namespaces
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cnpg-mcp-role
+  namespace: production
+rules:
+  - apiGroups: ["postgresql.cnpg.io"]
+    resources: ["clusters", "backups", "scheduledbackups", "poolers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["events", "pods", "pods/log", "secrets", "persistentvolumeclaims", "services"]
+    verbs: ["get", "list", "watch"]
+---
+# Optional: RoleBinding for namespace-scoped access
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cnpg-mcp-binding
+  namespace: production
+subjects:
+  - kind: ServiceAccount
+    name: cnpg-mcp-server
+    namespace: default
+roleRef:
+  kind: Role
+  name: cnpg-mcp-role
+  apiGroup: rbac.authorization.k8s.io

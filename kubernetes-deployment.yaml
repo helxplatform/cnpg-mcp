@@ -1,0 +1,72 @@
+---
+# Deployment for running the MCP server in Kubernetes
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cnpg-mcp-server
+  namespace: default
+  labels:
+    app: cnpg-mcp-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cnpg-mcp-server
+  template:
+    metadata:
+      labels:
+        app: cnpg-mcp-server
+    spec:
+      serviceAccountName: cnpg-mcp-server
+      containers:
+      - name: mcp-server
+        image: your-registry/cnpg-mcp-server:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        # Add any additional environment variables here
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        # Health checks (optional, adjust based on your setup)
+        # livenessProbe:
+        #   exec:
+        #     command:
+        #     - python
+        #     - -c
+        #     - "import sys; sys.exit(0)"
+        #   initialDelaySeconds: 30
+        #   periodSeconds: 30
+      restartPolicy: Always
+---
+# Optional: Service for exposing the MCP server
+# This is useful if you want to access it via network instead of stdio
+# apiVersion: v1
+# kind: Service
+# metadata:
+#   name: cnpg-mcp-server
+#   namespace: default
+# spec:
+#   selector:
+#     app: cnpg-mcp-server
+#   ports:
+#   - protocol: TCP
+#     port: 8080
+#     targetPort: 8080
+#   type: ClusterIP
+---
+# ConfigMap for additional configuration (optional)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cnpg-mcp-config
+  namespace: default
+data:
+  # Add any configuration parameters here
+  character_limit: "25000"
+  default_detail_level: "concise"

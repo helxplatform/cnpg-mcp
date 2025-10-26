@@ -1,0 +1,100 @@
+---
+# Example CloudNativePG Cluster for Testing
+# This creates a simple 3-instance PostgreSQL 16 cluster
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: example-cluster
+  namespace: default
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:16
+  
+  # Storage configuration
+  storage:
+    size: 10Gi
+    # storageClass: fast-ssd  # Uncomment to use specific storage class
+  
+  # PostgreSQL configuration
+  postgresql:
+    parameters:
+      max_connections: "100"
+      shared_buffers: "256MB"
+      effective_cache_size: "1GB"
+      maintenance_work_mem: "64MB"
+      checkpoint_completion_target: "0.9"
+      wal_buffers: "16MB"
+      default_statistics_target: "100"
+      random_page_cost: "1.1"
+      effective_io_concurrency: "200"
+      work_mem: "2621kB"
+      min_wal_size: "1GB"
+      max_wal_size: "4GB"
+  
+  # Bootstrap configuration
+  bootstrap:
+    initdb:
+      database: app
+      owner: app
+      secret:
+        name: example-cluster-app-user
+  
+  # Backup configuration (optional)
+  # backup:
+  #   barmanObjectStore:
+  #     destinationPath: s3://my-bucket/backups
+  #     s3Credentials:
+  #       accessKeyId:
+  #         name: aws-credentials
+  #         key: ACCESS_KEY_ID
+  #       secretAccessKey:
+  #         name: aws-credentials
+  #         key: SECRET_ACCESS_KEY
+  #     wal:
+  #       compression: gzip
+  #     data:
+  #       compression: gzip
+  
+  # Monitoring (optional)
+  monitoring:
+    enablePodMonitor: true
+  
+  # Resources (optional but recommended for production)
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "500m"
+    limits:
+      memory: "1Gi"
+      cpu: "1"
+  
+  # Affinity rules (optional)
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: kubernetes.io/hostname
+    podAntiAffinityType: preferred
+
+---
+# Secret for the application user (auto-generated if not provided)
+# apiVersion: v1
+# kind: Secret
+# metadata:
+#   name: example-cluster-app-user
+#   namespace: default
+# type: kubernetes.io/basic-auth
+# stringData:
+#   username: app
+#   password: your-secure-password-here
+
+---
+# Example ScheduledBackup (optional)
+# apiVersion: postgresql.cnpg.io/v1
+# kind: ScheduledBackup
+# metadata:
+#   name: example-cluster-backup
+#   namespace: default
+# spec:
+#   schedule: "0 0 0 * * *"  # Daily at midnight
+#   backupOwnerReference: self
+#   cluster:
+#     name: example-cluster
