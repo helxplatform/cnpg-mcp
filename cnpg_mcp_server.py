@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Literal
 from datetime import datetime
 
 from mcp.server import Server
-from mcp.types import Tool, TextContent
+from mcp.types import Tool, TextContent, Resource, Prompt
 from pydantic import BaseModel, Field
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
@@ -42,8 +42,32 @@ TRANSPORT_MODE = "stdio"  # or "http"
 # Initialize MCP server
 mcp = Server("cloudnative-pg")
 
-def init_kubernetes_clients():
-    """Initialize Kubernetes API clients."""
+# Kubernetes clients (initialized lazily)
+custom_api: Optional[client.CustomObjectsApi] = None
+core_api: Optional[client.CoreV1Api] = None
+_k8s_init_attempted = False
+_k8s_init_error: Optional[str] = None
+
+def get_kubernetes_clients() -> tuple[client.CustomObjectsApi, client.CoreV1Api]:
+    """
+    Get or initialize Kubernetes API clients (lazy initialization).
+
+    This allows the MCP server to start even if Kubernetes is not available,
+    and provides clear error messages when tools are called without K8s access.
+    """
+    global custom_api, core_api, _k8s_init_attempted, _k8s_init_error
+
+    # Return cached clients if already initialized
+    if custom_api is not None and core_api is not None:
+        return custom_api, core_api
+
+    # If we already tried and failed, return the cached error
+    if _k8s_init_attempted and _k8s_init_error:
+        raise Exception(_k8s_init_error)
+
+    # Try to initialize
+    _k8s_init_attempted = True
+
     try:
         config.load_incluster_config()
         print("Loaded in-cluster Kubernetes config", file=sys.stderr)
@@ -52,12 +76,21 @@ def init_kubernetes_clients():
             config.load_kube_config()
             print("Loaded kubeconfig from file", file=sys.stderr)
         except Exception as e:
-            print(f"Failed to load Kubernetes config: {e}", file=sys.stderr)
-            raise
-    
-    return client.CustomObjectsApi(), client.CoreV1Api()
+            _k8s_init_error = (
+                f"Failed to load Kubernetes configuration: {e}\n\n"
+                "Make sure you have:\n"
+                "1. A valid ~/.kube/config file, OR\n"
+                "2. KUBECONFIG environment variable set, OR\n"
+                "3. Running inside a Kubernetes cluster with proper service account\n\n"
+                "You can test your kubectl access with: kubectl cluster-info"
+            )
+            print(f"Kubernetes initialization failed: {_k8s_init_error}", file=sys.stderr)
+            raise Exception(_k8s_init_error)
 
-custom_api, core_api = init_kubernetes_clients()
+    custom_api = client.CustomObjectsApi()
+    core_api = client.CoreV1Api()
+
+    return custom_api, core_api
 
 
 # ============================================================================
@@ -106,6 +139,7 @@ def format_error_message(error: Exception, context: str = "") -> str:
 async def get_cnpg_cluster(namespace: str, name: str) -> Dict[str, Any]:
     """Get a CloudNativePG cluster resource."""
     try:
+        custom_api, _ = get_kubernetes_clients()
         cluster = await asyncio.to_thread(
             custom_api.get_namespaced_custom_object,
             group=CNPG_GROUP,
@@ -122,6 +156,7 @@ async def get_cnpg_cluster(namespace: str, name: str) -> Dict[str, Any]:
 async def list_cnpg_clusters(namespace: Optional[str] = None) -> List[Dict[str, Any]]:
     """List CloudNativePG cluster resources."""
     try:
+        custom_api, _ = get_kubernetes_clients()
         if namespace:
             result = await asyncio.to_thread(
                 custom_api.list_namespaced_custom_object,
@@ -270,10 +305,9 @@ class ScaleClusterInput(BaseModel):
 
 
 # ============================================================================
-# MCP Tools
+# MCP Tools - Implementation Functions
 # ============================================================================
 
-@mcp.tool()
 async def list_postgres_clusters(
     namespace: Optional[str] = None,
     detail_level: Literal["concise", "detailed"] = "concise"
@@ -325,7 +359,6 @@ async def list_postgres_clusters(
         return format_error_message(e, "listing PostgreSQL clusters")
 
 
-@mcp.tool()
 async def get_cluster_status(
     namespace: str,
     name: str,
@@ -370,7 +403,6 @@ async def get_cluster_status(
         return format_error_message(e, f"getting cluster status for {namespace}/{name}")
 
 
-@mcp.tool()
 async def create_postgres_cluster(
     namespace: str,
     name: str,
@@ -466,8 +498,9 @@ async def create_postgres_cluster(
         # Add storage class if specified
         if storage_class:
             cluster_spec["spec"]["storage"]["storageClass"] = storage_class
-        
+
         # Create the cluster
+        custom_api, _ = get_kubernetes_clients()
         result = await asyncio.to_thread(
             custom_api.create_namespaced_custom_object,
             group=CNPG_GROUP,
@@ -496,7 +529,6 @@ Wait until the cluster reaches 'Cluster in healthy state' phase before connectin
         return format_error_message(e, f"creating cluster {namespace}/{name}")
 
 
-@mcp.tool()
 async def scale_postgres_cluster(
     namespace: str,
     name: str,
@@ -533,11 +565,12 @@ async def scale_postgres_cluster(
     try:
         # Get current cluster
         cluster = await get_cnpg_cluster(namespace, name)
-        
+
         # Update the instances count
         cluster['spec']['instances'] = instances
-        
+
         # Apply the change
+        custom_api, _ = get_kubernetes_clients()
         result = await asyncio.to_thread(
             custom_api.patch_namespaced_custom_object,
             group=CNPG_GROUP,
@@ -574,26 +607,212 @@ get_cluster_status(namespace="{namespace}", name="{name}")
 
 
 # ============================================================================
+# MCP Server Handlers
+# ============================================================================
+
+@mcp.list_tools()
+async def list_tools() -> list[Tool]:
+    """List all available MCP tools."""
+    return [
+        Tool(
+            name="list_postgres_clusters",
+            description="List all PostgreSQL clusters managed by CloudNativePG. Use this to discover available clusters, check their health status, and understand the current state of your PostgreSQL infrastructure.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "namespace": {
+                        "type": "string",
+                        "description": "Kubernetes namespace to list clusters from. If not provided, lists clusters from all namespaces."
+                    },
+                    "detail_level": {
+                        "type": "string",
+                        "enum": ["concise", "detailed"],
+                        "description": "Level of detail in the response. Use 'concise' for a quick overview or 'detailed' for comprehensive information.",
+                        "default": "concise"
+                    }
+                }
+            }
+        ),
+        Tool(
+            name="get_cluster_status",
+            description="Get detailed status information for a specific PostgreSQL cluster. Use this to troubleshoot issues, verify cluster health, or get detailed insights into a specific cluster's operation.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "namespace": {
+                        "type": "string",
+                        "description": "Kubernetes namespace where the cluster exists."
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the CloudNativePG cluster."
+                    },
+                    "detail_level": {
+                        "type": "string",
+                        "enum": ["concise", "detailed"],
+                        "description": "Level of detail. 'concise' provides essential status, 'detailed' includes conditions and full configuration.",
+                        "default": "concise"
+                    }
+                },
+                "required": ["namespace", "name"]
+            }
+        ),
+        Tool(
+            name="create_postgres_cluster",
+            description="Create a new PostgreSQL cluster with CloudNativePG. This creates a high-availability PostgreSQL cluster with automatic replication, backups, and monitoring.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "namespace": {
+                        "type": "string",
+                        "description": "Kubernetes namespace where the cluster will be created. The namespace must exist."
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Name for the new cluster. Must be a valid Kubernetes resource name (lowercase alphanumeric or '-').",
+                        "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+                    },
+                    "instances": {
+                        "type": "integer",
+                        "description": "Number of PostgreSQL instances. Use 1 for development, 3+ for production HA.",
+                        "default": 3,
+                        "minimum": 1,
+                        "maximum": 10
+                    },
+                    "storage_size": {
+                        "type": "string",
+                        "description": "Storage size per instance (e.g., '10Gi', '100Gi').",
+                        "default": "10Gi"
+                    },
+                    "postgres_version": {
+                        "type": "string",
+                        "description": "PostgreSQL major version (e.g., '14', '15', '16').",
+                        "default": "16"
+                    },
+                    "storage_class": {
+                        "type": "string",
+                        "description": "Kubernetes storage class. If not specified, uses the cluster default."
+                    }
+                },
+                "required": ["namespace", "name"]
+            }
+        ),
+        Tool(
+            name="scale_postgres_cluster",
+            description="Scale a PostgreSQL cluster by changing the number of instances. CloudNativePG handles the scaling process safely, ensuring data consistency.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "namespace": {
+                        "type": "string",
+                        "description": "Kubernetes namespace where the cluster exists."
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the cluster to scale."
+                    },
+                    "instances": {
+                        "type": "integer",
+                        "description": "New number of instances (1-10). For HA, use 3 or more.",
+                        "minimum": 1,
+                        "maximum": 10
+                    }
+                },
+                "required": ["namespace", "name", "instances"]
+            }
+        )
+    ]
+
+
+@mcp.call_tool()
+async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+    """Handle tool execution requests."""
+    try:
+        if name == "list_postgres_clusters":
+            result = await list_postgres_clusters(
+                namespace=arguments.get("namespace"),
+                detail_level=arguments.get("detail_level", "concise")
+            )
+        elif name == "get_cluster_status":
+            result = await get_cluster_status(
+                namespace=arguments["namespace"],
+                name=arguments["name"],
+                detail_level=arguments.get("detail_level", "concise")
+            )
+        elif name == "create_postgres_cluster":
+            result = await create_postgres_cluster(
+                namespace=arguments["namespace"],
+                name=arguments["name"],
+                instances=arguments.get("instances", 3),
+                storage_size=arguments.get("storage_size", "10Gi"),
+                postgres_version=arguments.get("postgres_version", "16"),
+                storage_class=arguments.get("storage_class")
+            )
+        elif name == "scale_postgres_cluster":
+            result = await scale_postgres_cluster(
+                namespace=arguments["namespace"],
+                name=arguments["name"],
+                instances=arguments["instances"]
+            )
+        else:
+            raise ValueError(f"Unknown tool: {name}")
+
+        return [TextContent(type="text", text=result)]
+
+    except Exception as e:
+        error_msg = format_error_message(e, f"executing tool '{name}'")
+        return [TextContent(type="text", text=error_msg)]
+
+
+@mcp.list_resources()
+async def list_resources() -> list[Resource]:
+    """List available resources (none for this server)."""
+    return []
+
+
+@mcp.read_resource()
+async def read_resource(uri: str) -> str:
+    """Read a resource by URI (not implemented)."""
+    raise ValueError(f"Resource not found: {uri}")
+
+
+@mcp.list_prompts()
+async def list_prompts() -> list[Prompt]:
+    """List available prompts (none for this server)."""
+    return []
+
+
+@mcp.get_prompt()
+async def get_prompt(name: str, arguments: dict | None = None) -> str:
+    """Get a prompt by name (not implemented)."""
+    raise ValueError(f"Prompt not found: {name}")
+
+
+# ============================================================================
 # Transport Layer
 # ============================================================================
 
 async def run_stdio_transport():
     """
     Run the MCP server using stdio transport.
-    
+
     This is the default mode for local usage with Claude Desktop.
     The server communicates via stdin/stdout and is managed as a child process.
     """
     from mcp.server.stdio import stdio_server
-    
+
     print("Starting CloudNativePG MCP server with stdio transport...", file=sys.stderr)
-    
+    print(f"Python version: {sys.version}", file=sys.stderr)
+    print(f"MCP server initialized with name: cloudnative-pg", file=sys.stderr)
+
     async with stdio_server() as (read_stream, write_stream):
+        print("STDIO transport established, running server...", file=sys.stderr)
         await mcp.run(
             read_stream,
             write_stream,
             mcp.create_initialization_options()
         )
+        print("Server run completed", file=sys.stderr)
 
 
 async def run_http_transport(host: str = "0.0.0.0", port: int = 3000):

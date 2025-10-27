@@ -5,7 +5,7 @@ apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
   name: example-cluster
-  namespace: default
+  namespace: claude
 spec:
   instances: 3
   imageName: ghcr.io/cloudnative-pg/postgresql:16
