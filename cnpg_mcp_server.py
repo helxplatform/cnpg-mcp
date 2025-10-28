@@ -93,6 +93,27 @@ def get_kubernetes_clients() -> tuple[client.CustomObjectsApi, client.CoreV1Api]
     return custom_api, core_api
 
 
+def get_current_namespace() -> str:
+    """
+    Get the current namespace from the Kubernetes context.
+
+    Returns the namespace from the current context in kubeconfig, or 'default'
+    if no namespace is specified in the context or if in-cluster config is used.
+    """
+    try:
+        # Try to get the current context from kubeconfig
+        contexts, active_context = config.list_kube_config_contexts()
+        if active_context and 'namespace' in active_context.get('context', {}):
+            namespace = active_context['context']['namespace']
+            print(f"Using namespace from context: {namespace}", file=sys.stderr)
+            return namespace
+    except Exception as e:
+        # If we can't get the context (e.g., in-cluster config), fall back to default
+        print(f"Could not get namespace from context: {e}, using 'default'", file=sys.stderr)
+
+    return "default"
+
+
 # ============================================================================
 # Utility Functions
 # ============================================================================
@@ -111,8 +132,12 @@ def format_error_message(error: Exception, context: str = "") -> str:
     if isinstance(error, ApiException):
         status = error.status
         reason = error.reason
-        body = json.loads(error.body) if error.body else {}
-        message = body.get('message', str(error))
+        try:
+            body = json.loads(error.body) if error.body else {}
+            message = body.get('message', str(error))
+        except (json.JSONDecodeError, ValueError) as json_error:
+            # If the error body isn't valid JSON, use the raw body or string representation
+            message = error.body if error.body else str(error)
         
         suggestion = ""
         if status == 404:
@@ -241,15 +266,15 @@ class ListClustersInput(BaseModel):
 
 class GetClusterStatusInput(BaseModel):
     """Input for getting cluster status."""
-    namespace: str = Field(
-        ...,
-        description="Kubernetes namespace where the cluster exists.",
-        examples=["default", "production", "postgres-system"]
-    )
     name: str = Field(
         ...,
         description="Name of the CloudNativePG cluster.",
         examples=["my-postgres-cluster", "production-db"]
+    )
+    namespace: Optional[str] = Field(
+        None,
+        description="Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context.",
+        examples=["default", "production", "postgres-system"]
     )
     detail_level: Literal["concise", "detailed"] = Field(
         "concise",
@@ -259,11 +284,6 @@ class GetClusterStatusInput(BaseModel):
 
 class CreateClusterInput(BaseModel):
     """Input for creating a new PostgreSQL cluster."""
-    namespace: str = Field(
-        ...,
-        description="Kubernetes namespace where the cluster will be created.",
-        examples=["default", "production"]
-    )
     name: str = Field(
         ...,
         description="Name for the new cluster. Must be a valid Kubernetes resource name.",
@@ -290,17 +310,52 @@ class CreateClusterInput(BaseModel):
         None,
         description="Kubernetes storage class to use. If not specified, uses the cluster default."
     )
+    wait: bool = Field(
+        False,
+        description="Wait for the cluster to become operational before returning. If False, returns immediately after creation. Automatically set to False if instances > 5."
+    )
+    timeout: Optional[int] = Field(
+        None,
+        description="Maximum time in seconds to wait for cluster to become operational (only used if wait=True). If not specified, defaults to 60 seconds per instance. Must be between 30 and 600 seconds.",
+        ge=30,
+        le=600
+    )
+    namespace: Optional[str] = Field(
+        None,
+        description="Kubernetes namespace where the cluster will be created. If not specified, uses the current namespace from your Kubernetes context.",
+        examples=["default", "production"]
+    )
 
 
 class ScaleClusterInput(BaseModel):
     """Input for scaling a cluster."""
-    namespace: str = Field(..., description="Kubernetes namespace of the cluster.")
     name: str = Field(..., description="Name of the cluster to scale.")
     instances: int = Field(
         ...,
         description="New number of instances.",
         ge=1,
         le=10
+    )
+    namespace: Optional[str] = Field(
+        None,
+        description="Kubernetes namespace of the cluster. If not specified, uses the current namespace from your Kubernetes context."
+    )
+
+
+class DeleteClusterInput(BaseModel):
+    """Input for deleting a cluster."""
+    name: str = Field(
+        ...,
+        description="Name of the cluster to delete.",
+        examples=["my-postgres-cluster", "old-test-cluster"]
+    )
+    confirm_deletion: bool = Field(
+        False,
+        description="Must be explicitly set to true to confirm deletion. This is a safety mechanism to prevent accidental deletion of clusters."
+    )
+    namespace: Optional[str] = Field(
+        None,
+        description="Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
     )
 
 
@@ -360,68 +415,74 @@ async def list_postgres_clusters(
 
 
 async def get_cluster_status(
-    namespace: str,
     name: str,
+    namespace: Optional[str] = None,
     detail_level: Literal["concise", "detailed"] = "concise"
 ) -> str:
     """
     Get detailed status information for a specific PostgreSQL cluster.
-    
+
     This tool retrieves comprehensive information about a CloudNativePG cluster,
     including its current state, health conditions, replica status, and configuration.
     Use this to troubleshoot issues, verify cluster health, or get detailed insights
     into a specific cluster's operation.
-    
+
     Args:
-        namespace: Kubernetes namespace where the cluster exists. This is required
-                  as cluster names are only unique within a namespace.
         name: Name of the CloudNativePG cluster resource.
+        namespace: Kubernetes namespace where the cluster exists. If not specified,
+                  uses the current namespace from your Kubernetes context. Cluster
+                  names are only unique within a namespace.
         detail_level: Level of detail. 'concise' provides essential status information,
                      'detailed' includes conditions, events, resource usage, and full
                      configuration.
-    
+
     Returns:
         Formatted string with cluster status information including phase, ready instances,
         primary pod, PostgreSQL version, storage configuration, and detailed conditions
         if requested.
-    
+
     Examples:
-        - get_cluster_status(namespace="production", name="main-db")
-        - get_cluster_status(namespace="default", name="test-db", detail_level="detailed")
-    
+        - get_cluster_status(name="main-db")  # Uses current context namespace
+        - get_cluster_status(name="main-db", namespace="production")
+        - get_cluster_status(name="test-db", detail_level="detailed")
+
     Error Handling:
         - Returns 404 if cluster doesn't exist: Double-check the namespace and name.
         - Returns 403 if permissions are insufficient: Verify RBAC permissions for the
           postgresql.cnpg.io/clusters resource.
     """
     try:
+        # Infer namespace from context if not provided
+        if namespace is None:
+            namespace = get_current_namespace()
+
         cluster = await get_cnpg_cluster(namespace, name)
         result = format_cluster_status(cluster, detail_level)
         return truncate_response(result)
-    
+
     except Exception as e:
         return format_error_message(e, f"getting cluster status for {namespace}/{name}")
 
 
 async def create_postgres_cluster(
-    namespace: str,
     name: str,
     instances: int = 3,
     storage_size: str = "10Gi",
     postgres_version: str = "16",
-    storage_class: Optional[str] = None
+    storage_class: Optional[str] = None,
+    wait: bool = False,
+    timeout: Optional[int] = None,
+    namespace: Optional[str] = None
 ) -> str:
     """
     Create a new PostgreSQL cluster with CloudNativePG.
-    
+
     This tool creates a new high-availability PostgreSQL cluster with the specified
     configuration. The cluster will automatically set up replication, backups, and
     monitoring. This is a comprehensive workflow tool that handles the entire cluster
     creation process.
-    
+
     Args:
-        namespace: Kubernetes namespace where the cluster will be created. The namespace
-                  must exist before creating the cluster.
         name: Name for the new cluster. Must be a valid Kubernetes resource name
               (lowercase alphanumeric characters or '-', starting and ending with
               alphanumeric character).
@@ -435,34 +496,65 @@ async def create_postgres_cluster(
         storage_class: Kubernetes storage class for persistent volumes. If not specified,
                       uses the cluster's default storage class. Use fast storage (SSD)
                       for production databases.
-    
+        wait: If True, wait for the cluster to become operational before returning.
+              If False (default), return immediately after creation. Automatically
+              set to False if instances > 5 (to avoid waiting more than 5 minutes).
+        timeout: Maximum time in seconds to wait for cluster to become operational
+                (only used if wait=True). If not specified, defaults to 60 seconds
+                per instance. Range: 30-600 seconds (0.5-10 minutes).
+        namespace: Kubernetes namespace where the cluster will be created. If not specified,
+                  uses the current namespace from your Kubernetes context. The namespace
+                  must exist before creating the cluster.
+
     Returns:
         Success message with cluster details if creation succeeds, or detailed error
-        message with suggestions if it fails.
-    
+        message with suggestions if it fails. If wait=True, includes final cluster status.
+
     Examples:
-        - Simple cluster: create_postgres_cluster(namespace="default", name="my-db")
+        - Simple cluster: create_postgres_cluster(name="my-db")
+        - Wait for ready (auto-timeout 3min for 3 instances): create_postgres_cluster(name="my-db", wait=True)
+        - With custom timeout: create_postgres_cluster(name="my-db", wait=True, timeout=300)
+        - Large cluster (wait auto-disabled): create_postgres_cluster(name="big-db", instances=8, wait=True)
         - Production cluster: create_postgres_cluster(
-            namespace="production",
             name="main-db",
             instances=5,
             storage_size="100Gi",
             postgres_version="16",
-            storage_class="fast-ssd"
+            storage_class="fast-ssd",
+            wait=True,
+            namespace="production"
           )
-    
+
     Error Handling:
         - 409 Conflict: Cluster with this name already exists. Choose a different name
           or delete the existing cluster first.
         - 422 Invalid: Check that all parameters meet CloudNativePG requirements.
         - 403 Forbidden: Ensure service account has 'create' permission for
           postgresql.cnpg.io/clusters.
-    
+        - Timeout: If wait=True and cluster doesn't become ready within timeout period.
+
     Note:
-        Cluster creation is asynchronous. After creation, use get_cluster_status() to
+        Cluster creation is asynchronous. If wait=False, use get_cluster_status() to
         monitor the cluster until it reaches 'Cluster in healthy state' phase.
     """
     try:
+        # Infer namespace from context if not provided
+        if namespace is None:
+            namespace = get_current_namespace()
+
+        # Auto-disable wait for large clusters (> 5 instances)
+        # Waiting more than 5 minutes is too long
+        original_wait = wait
+        if instances > 5:
+            wait = False
+
+        # Calculate dynamic timeout based on instances if not provided
+        # Default: 60 seconds per instance
+        if timeout is None:
+            timeout = instances * 60
+        # Clamp timeout to valid range (30-600 seconds)
+        timeout = max(30, min(600, timeout))
+
         # Build the cluster specification
         cluster_spec = {
             "apiVersion": f"{CNPG_GROUP}/{CNPG_VERSION}",
@@ -511,7 +603,37 @@ async def create_postgres_cluster(
         )
         
         cluster_name = result['metadata']['name']
-        return f"""Successfully created PostgreSQL cluster '{cluster_name}' in namespace '{namespace}'.
+
+        # If wait is False, return immediately
+        if not wait:
+            auto_disabled_msg = ""
+            if original_wait and instances > 5:
+                auto_disabled_msg = f"\n⏭️  Note: Wait was automatically disabled because {instances} instances would require waiting up to {instances * 60} seconds (more than 5 minutes).\n"
+
+            return f"""Successfully created PostgreSQL cluster '{cluster_name}' in namespace '{namespace}'.
+
+Configuration:
+- Instances: {instances}
+- PostgreSQL Version: {postgres_version}
+- Storage Size: {storage_size}
+{f'- Storage Class: {storage_class}' if storage_class else ''}{auto_disabled_msg}
+The cluster is now being provisioned. You can monitor its status using:
+get_cluster_status(namespace="{namespace}", name="{cluster_name}")
+
+Wait until the cluster reaches 'Cluster in healthy state' phase before connecting.
+"""
+
+        # Wait for cluster to become operational
+        import time
+        start_time = time.time()
+        poll_interval = 5  # Check every 5 seconds
+
+        while True:
+            elapsed = time.time() - start_time
+
+            # Check timeout
+            if elapsed >= timeout:
+                return f"""Cluster '{cluster_name}' created but TIMED OUT waiting for it to become operational.
 
 Configuration:
 - Instances: {instances}
@@ -519,50 +641,95 @@ Configuration:
 - Storage Size: {storage_size}
 {f'- Storage Class: {storage_class}' if storage_class else ''}
 
-The cluster is now being provisioned. You can monitor its status using:
+Timeout: {timeout} seconds elapsed
+
+The cluster is still provisioning. Check status with:
 get_cluster_status(namespace="{namespace}", name="{cluster_name}")
 
-Wait until the cluster reaches 'Cluster in healthy state' phase before connecting.
+Note: Cluster creation can take several minutes depending on storage provisioning
+and PostgreSQL initialization time.
 """
-    
+
+            # Get current cluster status
+            try:
+                cluster = await get_cnpg_cluster(namespace, cluster_name)
+                status = cluster.get('status', {})
+                phase = status.get('phase', '')
+                ready_instances = status.get('readyInstances', 0)
+
+                # Check if cluster is healthy
+                if 'healthy' in phase.lower() and ready_instances == instances:
+                    current_primary = status.get('currentPrimary', 'unknown')
+                    return f"""Successfully created PostgreSQL cluster '{cluster_name}' in namespace '{namespace}'.
+
+Configuration:
+- Instances: {instances} ({ready_instances} ready)
+- PostgreSQL Version: {postgres_version}
+- Storage Size: {storage_size}
+{f'- Storage Class: {storage_class}' if storage_class else ''}
+- Current Primary: {current_primary}
+
+Status: {phase}
+
+✅ Cluster is operational and ready for connections!
+
+Time elapsed: {int(elapsed)} seconds
+
+Get connection details with:
+kubectl get secret {cluster_name}-app -n {namespace} -o jsonpath='{{.data.password}}' | base64 -d
+"""
+
+            except Exception:
+                # Cluster might not be fully created yet, continue waiting
+                pass
+
+            # Wait before next check
+            await asyncio.sleep(poll_interval)
+
     except Exception as e:
         return format_error_message(e, f"creating cluster {namespace}/{name}")
 
 
 async def scale_postgres_cluster(
-    namespace: str,
     name: str,
-    instances: int
+    instances: int,
+    namespace: Optional[str] = None
 ) -> str:
     """
     Scale a PostgreSQL cluster by changing the number of instances.
-    
+
     This tool modifies the number of PostgreSQL instances in a cluster, allowing you
     to scale up for increased capacity or scale down to reduce resource usage.
     CloudNativePG handles the scaling process safely, ensuring data consistency.
-    
+
     Args:
-        namespace: Kubernetes namespace where the cluster exists.
         name: Name of the cluster to scale.
         instances: New number of instances (1-10). For high availability, use 3 or more.
-    
+        namespace: Kubernetes namespace where the cluster exists. If not specified,
+                  uses the current namespace from your Kubernetes context.
+
     Returns:
         Success message if the scaling operation is initiated, or error details if it fails.
-    
+
     Examples:
-        - Scale up: scale_postgres_cluster(namespace="production", name="main-db", instances=5)
-        - Scale down: scale_postgres_cluster(namespace="default", name="test-db", instances=1)
-    
+        - Scale up: scale_postgres_cluster(name="main-db", instances=5)
+        - Scale with namespace: scale_postgres_cluster(name="main-db", instances=5, namespace="production")
+        - Scale down: scale_postgres_cluster(name="test-db", instances=1)
+
     Error Handling:
         - 404: Cluster not found. Verify namespace and name.
         - 422: Invalid instance count. Must be between 1 and 10.
         - Scaling is performed as a rolling update. Monitor with get_cluster_status().
-    
+
     Note:
         Scaling is asynchronous. The cluster will gradually adjust to the new size.
         Use get_cluster_status() to monitor progress.
     """
     try:
+        # Infer namespace from context if not provided
+        if namespace is None:
+            namespace = get_current_namespace()
+
         # Get current cluster
         cluster = await get_cnpg_cluster(namespace, name)
 
@@ -592,10 +759,115 @@ get_cluster_status(namespace="{namespace}", name="{name}")
         return format_error_message(e, f"scaling cluster {namespace}/{name}")
 
 
+async def delete_postgres_cluster(
+    name: str,
+    confirm_deletion: bool = False,
+    namespace: Optional[str] = None
+) -> str:
+    """
+    Delete a PostgreSQL cluster and its associated resources.
+
+    This tool permanently deletes a CloudNativePG cluster. This is a destructive
+    operation that cannot be undone. All data will be lost unless you have backups.
+    Use with caution, especially in production environments.
+
+    Args:
+        name: Name of the cluster to delete.
+        confirm_deletion: Must be explicitly set to True to confirm deletion.
+                         This is a required safety mechanism to prevent accidental deletions.
+        namespace: Kubernetes namespace where the cluster exists. If not specified,
+                  uses the current namespace from your Kubernetes context.
+
+    Returns:
+        Success message if deletion is initiated, warning message if not confirmed,
+        or error details if it fails.
+
+    Examples:
+        - Request deletion (shows warning): delete_postgres_cluster(name="old-test-cluster")
+        - Confirm deletion: delete_postgres_cluster(name="old-test-cluster", confirm_deletion=True)
+
+    Error Handling:
+        - 404: Cluster not found. Verify namespace and name.
+        - 403: Permission denied. Ensure service account has 'delete' permission.
+
+    Warning:
+        This operation is DESTRUCTIVE and IRREVERSIBLE. All data in the cluster
+        will be permanently lost. Make sure you have backups before deleting
+        production clusters. The persistent volumes may be retained or deleted
+        depending on the storage class reclaim policy.
+    """
+    try:
+        # Infer namespace from context if not provided
+        if namespace is None:
+            namespace = get_current_namespace()
+
+        # Check if deletion is confirmed
+        if not confirm_deletion:
+            # Verify cluster exists to provide accurate warning
+            await get_cnpg_cluster(namespace, name)
+
+            return f"""⚠️  DELETION NOT CONFIRMED
+
+You are about to delete the PostgreSQL cluster '{namespace}/{name}'.
+
+⚠️  WARNING: This is a DESTRUCTIVE and IRREVERSIBLE operation:
+- All data in this cluster will be PERMANENTLY LOST
+- All databases, tables, and data will be deleted
+- Depending on storage class policy, persistent volumes may be deleted
+- This action CANNOT be undone
+
+Before proceeding, ensure you have:
+✓ Backed up all important data
+✓ Verified this is the correct cluster to delete
+✓ Confirmed with your team (if applicable)
+
+To proceed with deletion, call this tool again with confirm_deletion=True:
+
+delete_postgres_cluster(
+    name="{name}",
+    namespace="{namespace}",
+    confirm_deletion=True
+)
+
+To cancel, simply do not call the tool again.
+"""
+
+        # Verify cluster exists before attempting deletion
+        await get_cnpg_cluster(namespace, name)
+
+        # Delete the cluster
+        custom_api, _ = get_kubernetes_clients()
+        await asyncio.to_thread(
+            custom_api.delete_namespaced_custom_object,
+            group=CNPG_GROUP,
+            version=CNPG_VERSION,
+            namespace=namespace,
+            plural=CNPG_PLURAL,
+            name=name
+        )
+
+        return f"""Successfully initiated deletion of cluster '{namespace}/{name}'.
+
+⚠️  WARNING: This is a destructive operation. All data in this cluster will be permanently lost.
+
+The cluster and its pods are being terminated. Depending on your storage class
+reclaim policy, the persistent volumes may be:
+- Retained: PVCs remain and can be manually deleted later
+- Deleted: PVCs are automatically deleted (data loss is permanent)
+
+Check deletion progress with:
+kubectl get cluster {name} -n {namespace}
+
+The cluster will no longer appear in list_postgres_clusters() once deletion is complete.
+"""
+
+    except Exception as e:
+        return format_error_message(e, f"deleting cluster {namespace}/{name}")
+
+
 # ============================================================================
 # TODO: Additional tools to implement
 # ============================================================================
-# - delete_postgres_cluster: Delete a cluster
 # - get_cluster_backups: List backups for a cluster
 # - trigger_backup: Manually trigger a backup
 # - restore_from_backup: Restore a cluster from backup
@@ -639,13 +911,13 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "namespace": {
-                        "type": "string",
-                        "description": "Kubernetes namespace where the cluster exists."
-                    },
                     "name": {
                         "type": "string",
                         "description": "Name of the CloudNativePG cluster."
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "description": "Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
                     },
                     "detail_level": {
                         "type": "string",
@@ -654,7 +926,7 @@ async def list_tools() -> list[Tool]:
                         "default": "concise"
                     }
                 },
-                "required": ["namespace", "name"]
+                "required": ["name"]
             }
         ),
         Tool(
@@ -663,10 +935,6 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "namespace": {
-                        "type": "string",
-                        "description": "Kubernetes namespace where the cluster will be created. The namespace must exist."
-                    },
                     "name": {
                         "type": "string",
                         "description": "Name for the new cluster. Must be a valid Kubernetes resource name (lowercase alphanumeric or '-').",
@@ -692,9 +960,24 @@ async def list_tools() -> list[Tool]:
                     "storage_class": {
                         "type": "string",
                         "description": "Kubernetes storage class. If not specified, uses the cluster default."
+                    },
+                    "wait": {
+                        "type": "boolean",
+                        "description": "Wait for the cluster to become operational before returning. If false (default), returns immediately after creation. Automatically set to false if instances > 5 to avoid waiting more than 5 minutes.",
+                        "default": False
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Maximum time in seconds to wait for cluster to become operational (only used if wait=true). If not specified, defaults to 60 seconds per instance. Must be between 30 and 600 seconds.",
+                        "minimum": 30,
+                        "maximum": 600
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "description": "Kubernetes namespace where the cluster will be created. If not specified, uses the current namespace from your Kubernetes context. The namespace must exist."
                     }
                 },
-                "required": ["namespace", "name"]
+                "required": ["name"]
             }
         ),
         Tool(
@@ -703,10 +986,6 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "namespace": {
-                        "type": "string",
-                        "description": "Kubernetes namespace where the cluster exists."
-                    },
                     "name": {
                         "type": "string",
                         "description": "Name of the cluster to scale."
@@ -714,11 +993,39 @@ async def list_tools() -> list[Tool]:
                     "instances": {
                         "type": "integer",
                         "description": "New number of instances (1-10). For HA, use 3 or more.",
+                        "default": 3,
                         "minimum": 1,
                         "maximum": 10
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "description": "Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
                     }
                 },
-                "required": ["namespace", "name", "instances"]
+                "required": ["name", "instances"]
+            }
+        ),
+        Tool(
+            name="delete_postgres_cluster",
+            description="Delete a PostgreSQL cluster and its associated resources. This is a DESTRUCTIVE operation that permanently removes the cluster and all its data. Requires explicit confirmation to proceed.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the cluster to delete."
+                    },
+                    "confirm_deletion": {
+                        "type": "boolean",
+                        "description": "Must be explicitly set to true to confirm deletion. If false or omitted, returns a warning message without deleting.",
+                        "default": False
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "description": "Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
+                    }
+                },
+                "required": ["name"]
             }
         )
     ]
@@ -735,24 +1042,32 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             )
         elif name == "get_cluster_status":
             result = await get_cluster_status(
-                namespace=arguments["namespace"],
                 name=arguments["name"],
+                namespace=arguments.get("namespace"),
                 detail_level=arguments.get("detail_level", "concise")
             )
         elif name == "create_postgres_cluster":
             result = await create_postgres_cluster(
-                namespace=arguments["namespace"],
                 name=arguments["name"],
                 instances=arguments.get("instances", 3),
                 storage_size=arguments.get("storage_size", "10Gi"),
                 postgres_version=arguments.get("postgres_version", "16"),
-                storage_class=arguments.get("storage_class")
+                storage_class=arguments.get("storage_class"),
+                wait=arguments.get("wait", False),
+                timeout=arguments.get("timeout"),  # None triggers dynamic calculation
+                namespace=arguments.get("namespace")
             )
         elif name == "scale_postgres_cluster":
             result = await scale_postgres_cluster(
-                namespace=arguments["namespace"],
                 name=arguments["name"],
-                instances=arguments["instances"]
+                instances=arguments["instances"],
+                namespace=arguments.get("namespace")
+            )
+        elif name == "delete_postgres_cluster":
+            result = await delete_postgres_cluster(
+                name=arguments["name"],
+                confirm_deletion=arguments.get("confirm_deletion", False),
+                namespace=arguments.get("namespace")
             )
         else:
             raise ValueError(f"Unknown tool: {name}")
