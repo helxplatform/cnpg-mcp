@@ -14,6 +14,9 @@ import asyncio
 import json
 import sys
 import argparse
+import secrets
+import string
+import base64
 from typing import Any, Dict, List, Optional, Literal
 from datetime import datetime
 
@@ -159,6 +162,12 @@ def format_error_message(error: Exception, context: str = "") -> str:
         return result
     
     return f"Error{' ' + context if context else ''}: {str(error)}"
+
+
+def generate_password(length: int = 16) -> str:
+    """Generate a random alphanumeric password."""
+    alphabet = string.ascii_letters + string.digits
+    return ''.join(secrets.choice(alphabet) for _ in range(length))
 
 
 async def get_cnpg_cluster(namespace: str, name: str) -> Dict[str, Any]:
@@ -353,6 +362,62 @@ class DeleteClusterInput(BaseModel):
         False,
         description="Must be explicitly set to true to confirm deletion. This is a safety mechanism to prevent accidental deletion of clusters."
     )
+    namespace: Optional[str] = Field(
+        None,
+        description="Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
+    )
+
+
+class ListRolesInput(BaseModel):
+    """Input for listing PostgreSQL roles."""
+    cluster_name: str = Field(..., description="Name of the PostgreSQL cluster.")
+    namespace: Optional[str] = Field(
+        None,
+        description="Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
+    )
+
+
+class CreateRoleInput(BaseModel):
+    """Input for creating a PostgreSQL role."""
+    cluster_name: str = Field(..., description="Name of the PostgreSQL cluster.")
+    role_name: str = Field(
+        ...,
+        description="Name of the role to create.",
+        pattern=r'^[a-z_][a-z0-9_]*$'
+    )
+    login: bool = Field(True, description="Allow role to log in. Default: true.")
+    superuser: bool = Field(False, description="Grant superuser privileges. Default: false.")
+    inherit: bool = Field(True, description="Inherit privileges from roles it is a member of. Default: true.")
+    createdb: bool = Field(False, description="Allow role to create databases. Default: false.")
+    createrole: bool = Field(False, description="Allow role to create other roles. Default: false.")
+    replication: bool = Field(False, description="Allow role to initiate streaming replication. Default: false.")
+    namespace: Optional[str] = Field(
+        None,
+        description="Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
+    )
+
+
+class UpdateRoleInput(BaseModel):
+    """Input for updating a PostgreSQL role."""
+    cluster_name: str = Field(..., description="Name of the PostgreSQL cluster.")
+    role_name: str = Field(..., description="Name of the role to update.")
+    login: Optional[bool] = Field(None, description="Allow role to log in.")
+    superuser: Optional[bool] = Field(None, description="Grant superuser privileges.")
+    inherit: Optional[bool] = Field(None, description="Inherit privileges from roles it is a member of.")
+    createdb: Optional[bool] = Field(None, description="Allow role to create databases.")
+    createrole: Optional[bool] = Field(None, description="Allow role to create other roles.")
+    replication: Optional[bool] = Field(None, description="Allow role to initiate streaming replication.")
+    password: Optional[str] = Field(None, description="New password for the role. If not specified, password remains unchanged.")
+    namespace: Optional[str] = Field(
+        None,
+        description="Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
+    )
+
+
+class DeleteRoleInput(BaseModel):
+    """Input for deleting a PostgreSQL role."""
+    cluster_name: str = Field(..., description="Name of the PostgreSQL cluster.")
+    role_name: str = Field(..., description="Name of the role to delete.")
     namespace: Optional[str] = Field(
         None,
         description="Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
@@ -865,6 +930,389 @@ The cluster will no longer appear in list_postgres_clusters() once deletion is c
         return format_error_message(e, f"deleting cluster {namespace}/{name}")
 
 
+async def list_postgres_roles(
+    cluster_name: str,
+    namespace: Optional[str] = None
+) -> str:
+    """
+    List all PostgreSQL roles/users managed in a cluster.
+
+    Reads roles from the Cluster CRD's .spec.managed.roles field.
+
+    Args:
+        cluster_name: Name of the PostgreSQL cluster.
+        namespace: Kubernetes namespace where the cluster exists.
+
+    Returns:
+        Formatted list of roles with their attributes.
+    """
+    try:
+        if namespace is None:
+            namespace = get_current_namespace()
+
+        # Get the cluster to read managed roles
+        cluster = await get_cnpg_cluster(namespace, cluster_name)
+        managed_roles = cluster.get('spec', {}).get('managed', {}).get('roles', [])
+
+        if not managed_roles:
+            return f"No managed roles defined in cluster '{namespace}/{cluster_name}'.\n\nRoles are managed through the Cluster CRD's .spec.managed.roles field."
+
+        result = f"PostgreSQL Roles managed in cluster '{namespace}/{cluster_name}':\n\n"
+
+        for role in managed_roles:
+            name = role.get('name', 'unknown')
+            ensure = role.get('ensure', 'present')
+            login = role.get('login', False)
+            superuser = role.get('superuser', False)
+            inherit = role.get('inherit', True)
+            createdb = role.get('createdb', False)
+            createrole = role.get('createrole', False)
+            replication = role.get('replication', False)
+            password_secret = role.get('passwordSecret', {}).get('name', 'none')
+            in_roles = role.get('inRoles', [])
+
+            result += f"**{name}**\n"
+            result += f"  - Ensure: {ensure}\n"
+            result += f"  - Login: {login}\n"
+            result += f"  - Superuser: {superuser}\n"
+            result += f"  - Inherit: {inherit}\n"
+            result += f"  - Create DB: {createdb}\n"
+            result += f"  - Create Role: {createrole}\n"
+            result += f"  - Replication: {replication}\n"
+            result += f"  - Password Secret: {password_secret}\n"
+            if in_roles:
+                result += f"  - Member of: {', '.join(in_roles)}\n"
+            result += "\n"
+
+        return result
+
+    except Exception as e:
+        return format_error_message(e, f"listing roles in cluster {namespace}/{cluster_name}")
+
+
+async def create_postgres_role(
+    cluster_name: str,
+    role_name: str,
+    login: bool = True,
+    superuser: bool = False,
+    inherit: bool = True,
+    createdb: bool = False,
+    createrole: bool = False,
+    replication: bool = False,
+    namespace: Optional[str] = None
+) -> str:
+    """
+    Create a new PostgreSQL role/user in a cluster using CloudNativePG's declarative role management.
+
+    Automatically generates a secure password and stores it in a Kubernetes secret.
+    Adds the role to the Cluster CRD's .spec.managed.roles field.
+
+    Args:
+        cluster_name: Name of the PostgreSQL cluster.
+        role_name: Name of the role to create.
+        login: Allow role to log in (default: true).
+        superuser: Grant superuser privileges (default: false).
+        inherit: Inherit privileges from parent roles (default: true).
+        createdb: Allow creating databases (default: false).
+        createrole: Allow creating roles (default: false).
+        replication: Allow streaming replication (default: false).
+        namespace: Kubernetes namespace.
+
+    Returns:
+        Success message with password retrieval instructions.
+    """
+    try:
+        if namespace is None:
+            namespace = get_current_namespace()
+
+        # Generate a secure password
+        password = generate_password(16)
+
+        # Create Kubernetes secret to store the password
+        secret_name = f"{cluster_name}-user-{role_name}"
+        _, core_api = get_kubernetes_clients()
+
+        secret_data = {
+            "username": base64.b64encode(role_name.encode()).decode(),
+            "password": base64.b64encode(password.encode()).decode()
+        }
+
+        secret = client.V1Secret(
+            metadata=client.V1ObjectMeta(
+                name=secret_name,
+                namespace=namespace,
+                labels={
+                    "app.kubernetes.io/name": "cnpg",
+                    "cnpg.io/cluster": cluster_name,
+                    "cnpg.io/role": role_name
+                }
+            ),
+            data=secret_data,
+            type="kubernetes.io/basic-auth"
+        )
+
+        await asyncio.to_thread(
+            core_api.create_namespaced_secret,
+            namespace=namespace,
+            body=secret
+        )
+
+        # Get the cluster and add the role to .spec.managed.roles
+        cluster = await get_cnpg_cluster(namespace, cluster_name)
+
+        # Ensure managed.roles exists
+        if 'managed' not in cluster['spec']:
+            cluster['spec']['managed'] = {}
+        if 'roles' not in cluster['spec']['managed']:
+            cluster['spec']['managed']['roles'] = []
+
+        # Check if role already exists
+        existing_role = next((r for r in cluster['spec']['managed']['roles'] if r.get('name') == role_name), None)
+        if existing_role:
+            return f"Error: Role '{role_name}' already exists in cluster '{namespace}/{cluster_name}'."
+
+        # Add the new role
+        new_role = {
+            "name": role_name,
+            "ensure": "present",
+            "login": login,
+            "superuser": superuser,
+            "inherit": inherit,
+            "createdb": createdb,
+            "createrole": createrole,
+            "replication": replication,
+            "passwordSecret": {
+                "name": secret_name
+            }
+        }
+
+        cluster['spec']['managed']['roles'].append(new_role)
+
+        # Update the cluster
+        custom_api, _ = get_kubernetes_clients()
+        await asyncio.to_thread(
+            custom_api.patch_namespaced_custom_object,
+            group=CNPG_GROUP,
+            version=CNPG_VERSION,
+            namespace=namespace,
+            plural=CNPG_PLURAL,
+            name=cluster_name,
+            body=cluster
+        )
+
+        return f"""Successfully created PostgreSQL role '{role_name}' in cluster '{namespace}/{cluster_name}'.
+
+Role Attributes:
+- Login: {login}
+- Superuser: {superuser}
+- Inherit: {inherit}
+- Create DB: {createdb}
+- Create Role: {createrole}
+- Replication: {replication}
+
+Password stored in Kubernetes secret: {secret_name}
+
+To retrieve the password:
+kubectl get secret {secret_name} -n {namespace} -o jsonpath='{{.data.password}}' | base64 -d
+
+Connection string:
+postgresql://{role_name}:<password>@{cluster_name}-rw.{namespace}.svc:5432/app
+
+The CloudNativePG operator will reconcile this role in the database.
+"""
+
+    except Exception as e:
+        return format_error_message(e, f"creating role {role_name} in cluster {namespace}/{cluster_name}")
+
+
+async def update_postgres_role(
+    cluster_name: str,
+    role_name: str,
+    login: Optional[bool] = None,
+    superuser: Optional[bool] = None,
+    inherit: Optional[bool] = None,
+    createdb: Optional[bool] = None,
+    createrole: Optional[bool] = None,
+    replication: Optional[bool] = None,
+    password: Optional[str] = None,
+    namespace: Optional[str] = None
+) -> str:
+    """
+    Update attributes of an existing PostgreSQL role using CloudNativePG's declarative role management.
+
+    Args:
+        cluster_name: Name of the PostgreSQL cluster.
+        role_name: Name of the role to update.
+        login, superuser, inherit, createdb, createrole, replication: Optional attribute changes.
+        password: Optional new password. If not provided, password remains unchanged.
+        namespace: Kubernetes namespace.
+
+    Returns:
+        Success message with updated attributes.
+    """
+    try:
+        if namespace is None:
+            namespace = get_current_namespace()
+
+        # Get the cluster
+        cluster = await get_cnpg_cluster(namespace, cluster_name)
+        managed_roles = cluster.get('spec', {}).get('managed', {}).get('roles', [])
+
+        # Find the role
+        role = next((r for r in managed_roles if r.get('name') == role_name), None)
+        if not role:
+            return f"Error: Role '{role_name}' not found in cluster '{namespace}/{cluster_name}'."
+
+        updates = []
+
+        # Update attributes
+        if login is not None:
+            role['login'] = login
+            updates.append(f"Login: {login}")
+
+        if superuser is not None:
+            role['superuser'] = superuser
+            updates.append(f"Superuser: {superuser}")
+
+        if inherit is not None:
+            role['inherit'] = inherit
+            updates.append(f"Inherit: {inherit}")
+
+        if createdb is not None:
+            role['createdb'] = createdb
+            updates.append(f"Create DB: {createdb}")
+
+        if createrole is not None:
+            role['createrole'] = createrole
+            updates.append(f"Create Role: {createrole}")
+
+        if replication is not None:
+            role['replication'] = replication
+            updates.append(f"Replication: {replication}")
+
+        if password is not None:
+            # Update the secret
+            secret_name = f"{cluster_name}-user-{role_name}"
+            _, core_api = get_kubernetes_clients()
+
+            try:
+                secret = await asyncio.to_thread(
+                    core_api.read_namespaced_secret,
+                    name=secret_name,
+                    namespace=namespace
+                )
+                secret.data["password"] = base64.b64encode(password.encode()).decode()
+                await asyncio.to_thread(
+                    core_api.replace_namespaced_secret,
+                    name=secret_name,
+                    namespace=namespace,
+                    body=secret
+                )
+                updates.append("Password: updated")
+            except ApiException as e:
+                return f"Error: Secret '{secret_name}' not found. Cannot update password."
+
+        if not updates:
+            return "No updates specified. Please provide at least one attribute to update."
+
+        # Update the cluster
+        custom_api, _ = get_kubernetes_clients()
+        await asyncio.to_thread(
+            custom_api.patch_namespaced_custom_object,
+            group=CNPG_GROUP,
+            version=CNPG_VERSION,
+            namespace=namespace,
+            plural=CNPG_PLURAL,
+            name=cluster_name,
+            body=cluster
+        )
+
+        updates_text = '\n- '.join(updates)
+        return f"""Successfully updated PostgreSQL role '{role_name}' in cluster '{namespace}/{cluster_name}'.
+
+Updated Attributes:
+- {updates_text}
+
+The CloudNativePG operator will reconcile these changes in the database.
+"""
+
+    except Exception as e:
+        return format_error_message(e, f"updating role {role_name} in cluster {namespace}/{cluster_name}")
+
+
+async def delete_postgres_role(
+    cluster_name: str,
+    role_name: str,
+    namespace: Optional[str] = None
+) -> str:
+    """
+    Delete a PostgreSQL role from a cluster using CloudNativePG's declarative role management.
+
+    Sets the role's ensure field to 'absent' or removes it from .spec.managed.roles.
+    Also deletes the associated Kubernetes secret.
+
+    Args:
+        cluster_name: Name of the PostgreSQL cluster.
+        role_name: Name of the role to delete.
+        namespace: Kubernetes namespace.
+
+    Returns:
+        Success message.
+    """
+    try:
+        if namespace is None:
+            namespace = get_current_namespace()
+
+        # Get the cluster
+        cluster = await get_cnpg_cluster(namespace, cluster_name)
+        managed_roles = cluster.get('spec', {}).get('managed', {}).get('roles', [])
+
+        # Find and remove the role
+        role_index = next((i for i, r in enumerate(managed_roles) if r.get('name') == role_name), None)
+        if role_index is None:
+            return f"Error: Role '{role_name}' not found in cluster '{namespace}/{cluster_name}'."
+
+        # Remove the role from the list
+        managed_roles.pop(role_index)
+
+        # Update the cluster
+        custom_api, _ = get_kubernetes_clients()
+        await asyncio.to_thread(
+            custom_api.patch_namespaced_custom_object,
+            group=CNPG_GROUP,
+            version=CNPG_VERSION,
+            namespace=namespace,
+            plural=CNPG_PLURAL,
+            name=cluster_name,
+            body=cluster
+        )
+
+        # Delete the associated secret
+        secret_name = f"{cluster_name}-user-{role_name}"
+        _, core_api = get_kubernetes_clients()
+
+        try:
+            await asyncio.to_thread(
+                core_api.delete_namespaced_secret,
+                name=secret_name,
+                namespace=namespace
+            )
+            secret_deleted = True
+        except ApiException:
+            # Secret doesn't exist or already deleted
+            secret_deleted = False
+
+        secret_msg = f"\nAssociated secret '{secret_name}' was also deleted." if secret_deleted else ""
+
+        return f"""Successfully deleted PostgreSQL role '{role_name}' from cluster '{namespace}/{cluster_name}'.{secret_msg}
+
+The CloudNativePG operator will drop this role from the database.
+"""
+
+    except Exception as e:
+        return format_error_message(e, f"deleting role {role_name} from cluster {namespace}/{cluster_name}")
+
+
 # ============================================================================
 # TODO: Additional tools to implement
 # ============================================================================
@@ -1027,6 +1475,149 @@ async def list_tools() -> list[Tool]:
                 },
                 "required": ["name"]
             }
+        ),
+        Tool(
+            name="list_postgres_roles",
+            description="List all PostgreSQL roles/users in a cluster. Shows role attributes like login, superuser, createdb, etc.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "cluster_name": {
+                        "type": "string",
+                        "description": "Name of the PostgreSQL cluster."
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "description": "Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
+                    }
+                },
+                "required": ["cluster_name"]
+            }
+        ),
+        Tool(
+            name="create_postgres_role",
+            description="Create a new PostgreSQL role/user in a cluster. Automatically generates a secure password and stores it in a Kubernetes secret.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "cluster_name": {
+                        "type": "string",
+                        "description": "Name of the PostgreSQL cluster."
+                    },
+                    "role_name": {
+                        "type": "string",
+                        "description": "Name of the role to create. Must start with a letter or underscore, followed by letters, numbers, or underscores.",
+                        "pattern": "^[a-z_][a-z0-9_]*$"
+                    },
+                    "login": {
+                        "type": "boolean",
+                        "description": "Allow role to log in.",
+                        "default": True
+                    },
+                    "superuser": {
+                        "type": "boolean",
+                        "description": "Grant superuser privileges.",
+                        "default": False
+                    },
+                    "inherit": {
+                        "type": "boolean",
+                        "description": "Inherit privileges from roles it is a member of.",
+                        "default": True
+                    },
+                    "createdb": {
+                        "type": "boolean",
+                        "description": "Allow role to create databases.",
+                        "default": False
+                    },
+                    "createrole": {
+                        "type": "boolean",
+                        "description": "Allow role to create other roles.",
+                        "default": False
+                    },
+                    "replication": {
+                        "type": "boolean",
+                        "description": "Allow role to initiate streaming replication.",
+                        "default": False
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "description": "Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
+                    }
+                },
+                "required": ["cluster_name", "role_name"]
+            }
+        ),
+        Tool(
+            name="update_postgres_role",
+            description="Update attributes of an existing PostgreSQL role/user. Can modify permissions and password.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "cluster_name": {
+                        "type": "string",
+                        "description": "Name of the PostgreSQL cluster."
+                    },
+                    "role_name": {
+                        "type": "string",
+                        "description": "Name of the role to update."
+                    },
+                    "login": {
+                        "type": "boolean",
+                        "description": "Allow role to log in."
+                    },
+                    "superuser": {
+                        "type": "boolean",
+                        "description": "Grant superuser privileges."
+                    },
+                    "inherit": {
+                        "type": "boolean",
+                        "description": "Inherit privileges from roles it is a member of."
+                    },
+                    "createdb": {
+                        "type": "boolean",
+                        "description": "Allow role to create databases."
+                    },
+                    "createrole": {
+                        "type": "boolean",
+                        "description": "Allow role to create other roles."
+                    },
+                    "replication": {
+                        "type": "boolean",
+                        "description": "Allow role to initiate streaming replication."
+                    },
+                    "password": {
+                        "type": "string",
+                        "description": "New password for the role. If not specified, password remains unchanged."
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "description": "Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
+                    }
+                },
+                "required": ["cluster_name", "role_name"]
+            }
+        ),
+        Tool(
+            name="delete_postgres_role",
+            description="Delete a PostgreSQL role/user from a cluster. Also deletes the associated Kubernetes secret containing the password.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "cluster_name": {
+                        "type": "string",
+                        "description": "Name of the PostgreSQL cluster."
+                    },
+                    "role_name": {
+                        "type": "string",
+                        "description": "Name of the role to delete."
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "description": "Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
+                    }
+                },
+                "required": ["cluster_name", "role_name"]
+            }
         )
     ]
 
@@ -1067,6 +1658,42 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await delete_postgres_cluster(
                 name=arguments["name"],
                 confirm_deletion=arguments.get("confirm_deletion", False),
+                namespace=arguments.get("namespace")
+            )
+        elif name == "list_postgres_roles":
+            result = await list_postgres_roles(
+                cluster_name=arguments["cluster_name"],
+                namespace=arguments.get("namespace")
+            )
+        elif name == "create_postgres_role":
+            result = await create_postgres_role(
+                cluster_name=arguments["cluster_name"],
+                role_name=arguments["role_name"],
+                login=arguments.get("login", True),
+                superuser=arguments.get("superuser", False),
+                inherit=arguments.get("inherit", True),
+                createdb=arguments.get("createdb", False),
+                createrole=arguments.get("createrole", False),
+                replication=arguments.get("replication", False),
+                namespace=arguments.get("namespace")
+            )
+        elif name == "update_postgres_role":
+            result = await update_postgres_role(
+                cluster_name=arguments["cluster_name"],
+                role_name=arguments["role_name"],
+                login=arguments.get("login"),
+                superuser=arguments.get("superuser"),
+                inherit=arguments.get("inherit"),
+                createdb=arguments.get("createdb"),
+                createrole=arguments.get("createrole"),
+                replication=arguments.get("replication"),
+                password=arguments.get("password"),
+                namespace=arguments.get("namespace")
+            )
+        elif name == "delete_postgres_role":
+            result = await delete_postgres_role(
+                cluster_name=arguments["cluster_name"],
+                role_name=arguments["role_name"],
                 namespace=arguments.get("namespace")
             )
         else:
