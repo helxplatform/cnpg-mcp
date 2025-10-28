@@ -17,6 +17,7 @@ import argparse
 import secrets
 import string
 import base64
+import yaml
 from typing import Any, Dict, List, Optional, Literal
 from datetime import datetime
 
@@ -335,6 +336,10 @@ class CreateClusterInput(BaseModel):
         description="Kubernetes namespace where the cluster will be created. If not specified, uses the current namespace from your Kubernetes context.",
         examples=["default", "production"]
     )
+    dry_run: bool = Field(
+        False,
+        description="If True, returns the cluster definition without creating it. Useful for previewing the configuration before applying it."
+    )
 
 
 class ScaleClusterInput(BaseModel):
@@ -576,7 +581,8 @@ async def create_postgres_cluster(
     storage_class: Optional[str] = None,
     wait: bool = False,
     timeout: Optional[int] = None,
-    namespace: Optional[str] = None
+    namespace: Optional[str] = None,
+    dry_run: bool = False
 ) -> str:
     """
     Create a new PostgreSQL cluster with CloudNativePG.
@@ -609,10 +615,14 @@ async def create_postgres_cluster(
         namespace: Kubernetes namespace where the cluster will be created. If not specified,
                   uses the current namespace from your Kubernetes context. The namespace
                   must exist before creating the cluster.
+        dry_run: If True, returns the cluster definition that would be created without
+                actually creating it. Useful for previewing the configuration before
+                applying it. Default is False.
 
     Returns:
         Success message with cluster details if creation succeeds, or detailed error
         message with suggestions if it fails. If wait=True, includes final cluster status.
+        If dry_run=True, returns the YAML cluster definition that would be created.
 
     Examples:
         - Simple cluster: create_postgres_cluster(name="my-db")
@@ -678,15 +688,6 @@ async def create_postgres_cluster(
                         "max_connections": "100",
                         "shared_buffers": "256MB"
                     }
-                },
-                "bootstrap": {
-                    "initdb": {
-                        "database": "app",
-                        "owner": "app",
-                        "secret": {
-                            "name": f"{name}-app-user"
-                        }
-                    }
                 }
             }
         }
@@ -694,6 +695,19 @@ async def create_postgres_cluster(
         # Add storage class if specified
         if storage_class:
             cluster_spec["spec"]["storage"]["storageClass"] = storage_class
+
+        # If dry_run, return the cluster definition without creating
+        if dry_run:
+            cluster_yaml = yaml.dump(cluster_spec, default_flow_style=False, sort_keys=False)
+            return f"""Dry run: PostgreSQL cluster definition for '{name}' in namespace '{namespace}'
+
+This is the cluster definition that would be created:
+
+```yaml
+{cluster_yaml}```
+
+To create this cluster, call create_postgres_cluster again with dry_run=False (or omit the dry_run parameter).
+"""
 
         # Create the cluster
         custom_api, _ = get_kubernetes_clients()
@@ -1672,6 +1686,11 @@ async def list_tools() -> list[Tool]:
                     "namespace": {
                         "type": "string",
                         "description": "Kubernetes namespace where the cluster will be created. If not specified, uses the current namespace from your Kubernetes context. The namespace must exist."
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "If true, returns the cluster definition without creating it. Useful for previewing the configuration before applying it. Default is false.",
+                        "default": False
                     }
                 },
                 "required": ["name"]
@@ -1968,7 +1987,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 storage_class=arguments.get("storage_class"),
                 wait=arguments.get("wait", False),
                 timeout=arguments.get("timeout"),  # None triggers dynamic calculation
-                namespace=arguments.get("namespace")
+                namespace=arguments.get("namespace"),
+                dry_run=arguments.get("dry_run", False)
             )
         elif name == "scale_postgres_cluster":
             result = await scale_postgres_cluster(
