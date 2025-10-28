@@ -34,6 +34,7 @@ CHARACTER_LIMIT = 25000
 CNPG_GROUP = "postgresql.cnpg.io"
 CNPG_VERSION = "v1"
 CNPG_PLURAL = "clusters"
+CNPG_DATABASE_PLURAL = "databases"
 
 # Transport mode (set via CLI args)
 TRANSPORT_MODE = "stdio"  # or "http"
@@ -418,6 +419,44 @@ class DeleteRoleInput(BaseModel):
     """Input for deleting a PostgreSQL role."""
     cluster_name: str = Field(..., description="Name of the PostgreSQL cluster.")
     role_name: str = Field(..., description="Name of the role to delete.")
+    namespace: Optional[str] = Field(
+        None,
+        description="Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
+    )
+
+
+class ListDatabasesInput(BaseModel):
+    """Input for listing PostgreSQL databases."""
+    cluster_name: str = Field(..., description="Name of the PostgreSQL cluster.")
+    namespace: Optional[str] = Field(
+        None,
+        description="Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
+    )
+
+
+class CreateDatabaseInput(BaseModel):
+    """Input for creating a PostgreSQL database."""
+    cluster_name: str = Field(..., description="Name of the PostgreSQL cluster.")
+    database_name: str = Field(
+        ...,
+        description="Name of the database to create.",
+        pattern=r'^[a-z_][a-z0-9_]*$'
+    )
+    owner: str = Field(..., description="Name of the role that will own the database.")
+    reclaim_policy: Literal["retain", "delete"] = Field(
+        "retain",
+        description="Policy for database deletion. 'retain' keeps the database when the CRD is deleted, 'delete' removes it."
+    )
+    namespace: Optional[str] = Field(
+        None,
+        description="Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
+    )
+
+
+class DeleteDatabaseInput(BaseModel):
+    """Input for deleting a PostgreSQL database."""
+    cluster_name: str = Field(..., description="Name of the PostgreSQL cluster.")
+    database_name: str = Field(..., description="Name of the database to delete.")
     namespace: Optional[str] = Field(
         None,
         description="Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
@@ -1313,6 +1352,216 @@ The CloudNativePG operator will drop this role from the database.
         return format_error_message(e, f"deleting role {role_name} from cluster {namespace}/{cluster_name}")
 
 
+async def list_postgres_databases(
+    cluster_name: str,
+    namespace: Optional[str] = None
+) -> str:
+    """
+    List all PostgreSQL databases managed by Database CRDs for a cluster.
+
+    Args:
+        cluster_name: Name of the PostgreSQL cluster.
+        namespace: Kubernetes namespace where the cluster exists.
+
+    Returns:
+        Formatted list of databases with their details.
+    """
+    try:
+        if namespace is None:
+            namespace = get_current_namespace()
+
+        # List all Database CRDs in the namespace
+        custom_api, _ = get_kubernetes_clients()
+        databases = await asyncio.to_thread(
+            custom_api.list_namespaced_custom_object,
+            group=CNPG_GROUP,
+            version=CNPG_VERSION,
+            namespace=namespace,
+            plural=CNPG_DATABASE_PLURAL
+        )
+
+        # Filter for databases belonging to this cluster
+        cluster_databases = [
+            db for db in databases.get('items', [])
+            if db.get('spec', {}).get('cluster', {}).get('name') == cluster_name
+        ]
+
+        if not cluster_databases:
+            return f"No managed databases found for cluster '{namespace}/{cluster_name}'.\n\nDatabases are managed through Database CRDs."
+
+        result = f"PostgreSQL Databases for cluster '{namespace}/{cluster_name}':\n\n"
+
+        for db in cluster_databases:
+            spec = db.get('spec', {})
+            metadata = db.get('metadata', {})
+
+            crd_name = metadata.get('name', 'unknown')
+            db_name = spec.get('name', 'unknown')
+            owner = spec.get('owner', 'unknown')
+            ensure = spec.get('ensure', 'present')
+            reclaim_policy = spec.get('databaseReclaimPolicy', 'retain')
+
+            result += f"**{db_name}** (CRD: {crd_name})\n"
+            result += f"  - Owner: {owner}\n"
+            result += f"  - Ensure: {ensure}\n"
+            result += f"  - Reclaim Policy: {reclaim_policy}\n"
+            result += "\n"
+
+        return result
+
+    except Exception as e:
+        return format_error_message(e, f"listing databases for cluster {namespace}/{cluster_name}")
+
+
+async def create_postgres_database(
+    cluster_name: str,
+    database_name: str,
+    owner: str,
+    reclaim_policy: Literal["retain", "delete"] = "retain",
+    namespace: Optional[str] = None
+) -> str:
+    """
+    Create a new PostgreSQL database using CloudNativePG's Database CRD.
+
+    Creates a Database custom resource that the CloudNativePG operator will reconcile.
+
+    Args:
+        cluster_name: Name of the PostgreSQL cluster.
+        database_name: Name of the database to create.
+        owner: Name of the role that will own the database.
+        reclaim_policy: 'retain' to keep database after CRD deletion, 'delete' to remove it.
+        namespace: Kubernetes namespace.
+
+    Returns:
+        Success message with database details.
+    """
+    try:
+        if namespace is None:
+            namespace = get_current_namespace()
+
+        # Create a unique CRD name (cluster-database)
+        crd_name = f"{cluster_name}-{database_name}"
+
+        # Build the Database CRD
+        database_crd = {
+            "apiVersion": f"{CNPG_GROUP}/{CNPG_VERSION}",
+            "kind": "Database",
+            "metadata": {
+                "name": crd_name,
+                "namespace": namespace,
+                "labels": {
+                    "cnpg.io/cluster": cluster_name,
+                    "cnpg.io/database": database_name
+                }
+            },
+            "spec": {
+                "name": database_name,
+                "owner": owner,
+                "cluster": {
+                    "name": cluster_name
+                },
+                "ensure": "present",
+                "databaseReclaimPolicy": reclaim_policy
+            }
+        }
+
+        # Create the Database CRD
+        custom_api, _ = get_kubernetes_clients()
+        await asyncio.to_thread(
+            custom_api.create_namespaced_custom_object,
+            group=CNPG_GROUP,
+            version=CNPG_VERSION,
+            namespace=namespace,
+            plural=CNPG_DATABASE_PLURAL,
+            body=database_crd
+        )
+
+        return f"""Successfully created Database CRD for '{database_name}' in cluster '{namespace}/{cluster_name}'.
+
+Database Details:
+- Name: {database_name}
+- Owner: {owner}
+- Reclaim Policy: {reclaim_policy}
+- CRD Name: {crd_name}
+
+The CloudNativePG operator will create this database in the cluster.
+
+To view the database status:
+kubectl get database {crd_name} -n {namespace}
+"""
+
+    except Exception as e:
+        return format_error_message(e, f"creating database {database_name} in cluster {namespace}/{cluster_name}")
+
+
+async def delete_postgres_database(
+    cluster_name: str,
+    database_name: str,
+    namespace: Optional[str] = None
+) -> str:
+    """
+    Delete a PostgreSQL database by removing its Database CRD.
+
+    Whether the database is actually dropped from PostgreSQL depends on the
+    databaseReclaimPolicy set when the database was created.
+
+    Args:
+        cluster_name: Name of the PostgreSQL cluster.
+        database_name: Name of the database to delete.
+        namespace: Kubernetes namespace.
+
+    Returns:
+        Success message.
+    """
+    try:
+        if namespace is None:
+            namespace = get_current_namespace()
+
+        # Find the Database CRD
+        crd_name = f"{cluster_name}-{database_name}"
+
+        custom_api, _ = get_kubernetes_clients()
+
+        # Get the database to check reclaim policy
+        try:
+            database_crd = await asyncio.to_thread(
+                custom_api.get_namespaced_custom_object,
+                group=CNPG_GROUP,
+                version=CNPG_VERSION,
+                namespace=namespace,
+                plural=CNPG_DATABASE_PLURAL,
+                name=crd_name
+            )
+            reclaim_policy = database_crd.get('spec', {}).get('databaseReclaimPolicy', 'retain')
+        except ApiException as e:
+            if e.status == 404:
+                return f"Error: Database CRD '{crd_name}' not found for database '{database_name}' in cluster '{namespace}/{cluster_name}'."
+            raise
+
+        # Delete the Database CRD
+        await asyncio.to_thread(
+            custom_api.delete_namespaced_custom_object,
+            group=CNPG_GROUP,
+            version=CNPG_VERSION,
+            namespace=namespace,
+            plural=CNPG_DATABASE_PLURAL,
+            name=crd_name
+        )
+
+        action = "will be dropped from PostgreSQL" if reclaim_policy == "delete" else "will be retained in PostgreSQL"
+
+        return f"""Successfully deleted Database CRD '{crd_name}' for database '{database_name}'.
+
+Reclaim Policy: {reclaim_policy}
+Result: The database {action}.
+
+The CloudNativePG operator will reconcile this change.
+"""
+
+    except Exception as e:
+        return format_error_message(e, f"deleting database {database_name} from cluster {namespace}/{cluster_name}")
+
+
 # ============================================================================
 # TODO: Additional tools to implement
 # ============================================================================
@@ -1618,6 +1867,79 @@ async def list_tools() -> list[Tool]:
                 },
                 "required": ["cluster_name", "role_name"]
             }
+        ),
+        Tool(
+            name="list_postgres_databases",
+            description="List all PostgreSQL databases in a cluster managed by CloudNativePG Database CRDs. Shows database name, owner, and reclaim policy.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "cluster_name": {
+                        "type": "string",
+                        "description": "Name of the PostgreSQL cluster."
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "description": "Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
+                    }
+                },
+                "required": ["cluster_name"]
+            }
+        ),
+        Tool(
+            name="create_postgres_database",
+            description="Create a new PostgreSQL database in a cluster using CloudNativePG Database CRD. The database is created declaratively and managed by the operator.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "cluster_name": {
+                        "type": "string",
+                        "description": "Name of the PostgreSQL cluster where the database will be created."
+                    },
+                    "database_name": {
+                        "type": "string",
+                        "description": "Name of the database to create. Must start with a letter or underscore, followed by letters, numbers, or underscores.",
+                        "pattern": "^[a-z_][a-z0-9_]*$"
+                    },
+                    "owner": {
+                        "type": "string",
+                        "description": "PostgreSQL role that will own the database. The role must already exist in the cluster."
+                    },
+                    "reclaim_policy": {
+                        "type": "string",
+                        "enum": ["retain", "delete"],
+                        "description": "What to do with the database when the CRD is deleted. 'retain' keeps the database, 'delete' removes it.",
+                        "default": "retain"
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "description": "Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
+                    }
+                },
+                "required": ["cluster_name", "database_name", "owner"]
+            }
+        ),
+        Tool(
+            name="delete_postgres_database",
+            description="Delete a PostgreSQL database from a cluster by removing the Database CRD. The actual database deletion depends on the reclaim policy set when the database was created.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "cluster_name": {
+                        "type": "string",
+                        "description": "Name of the PostgreSQL cluster."
+                    },
+                    "database_name": {
+                        "type": "string",
+                        "description": "Name of the database to delete."
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "description": "Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
+                    }
+                },
+                "required": ["cluster_name", "database_name"]
+            }
         )
     ]
 
@@ -1694,6 +2016,25 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await delete_postgres_role(
                 cluster_name=arguments["cluster_name"],
                 role_name=arguments["role_name"],
+                namespace=arguments.get("namespace")
+            )
+        elif name == "list_postgres_databases":
+            result = await list_postgres_databases(
+                cluster_name=arguments["cluster_name"],
+                namespace=arguments.get("namespace")
+            )
+        elif name == "create_postgres_database":
+            result = await create_postgres_database(
+                cluster_name=arguments["cluster_name"],
+                database_name=arguments["database_name"],
+                owner=arguments["owner"],
+                reclaim_policy=arguments.get("reclaim_policy", "retain"),
+                namespace=arguments.get("namespace")
+            )
+        elif name == "delete_postgres_database":
+            result = await delete_postgres_database(
+                cluster_name=arguments["cluster_name"],
+                database_name=arguments["database_name"],
                 namespace=arguments.get("namespace")
             )
         else:
