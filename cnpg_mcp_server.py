@@ -193,21 +193,18 @@ async def list_cnpg_clusters(namespace: Optional[str] = None) -> List[Dict[str, 
     """List CloudNativePG cluster resources."""
     try:
         custom_api, _ = get_kubernetes_clients()
-        if namespace:
-            result = await asyncio.to_thread(
-                custom_api.list_namespaced_custom_object,
-                group=CNPG_GROUP,
-                version=CNPG_VERSION,
-                namespace=namespace,
-                plural=CNPG_PLURAL
-            )
-        else:
-            result = await asyncio.to_thread(
-                custom_api.list_cluster_custom_object,
-                group=CNPG_GROUP,
-                version=CNPG_VERSION,
-                plural=CNPG_PLURAL
-            )
+
+        # Default to current namespace if not specified (consistent with other tools)
+        if namespace is None:
+            namespace = get_current_namespace()
+
+        result = await asyncio.to_thread(
+            custom_api.list_namespaced_custom_object,
+            group=CNPG_GROUP,
+            version=CNPG_VERSION,
+            namespace=namespace,
+            plural=CNPG_PLURAL
+        )
         return result.get('items', [])
     except ApiException as e:
         raise Exception(format_error_message(e, "listing clusters"))
@@ -267,7 +264,7 @@ class ListClustersInput(BaseModel):
     """Input for listing PostgreSQL clusters."""
     namespace: Optional[str] = Field(
         None,
-        description="Kubernetes namespace to list clusters from. If not provided, lists clusters from all namespaces."
+        description="Kubernetes namespace to list clusters from. If not provided, uses the current namespace from your Kubernetes context."
     )
     detail_level: Literal["concise", "detailed"] = Field(
         "concise",
@@ -478,31 +475,32 @@ async def list_postgres_clusters(
 ) -> str:
     """
     List all PostgreSQL clusters managed by CloudNativePG.
-    
+
     This tool retrieves information about PostgreSQL clusters in the Kubernetes cluster.
     Use this to discover available clusters, check their health status, and understand
     the current state of your PostgreSQL infrastructure.
-    
+
     Args:
-        namespace: Kubernetes namespace to list clusters from. If not provided, lists
-                  clusters from all namespaces. Use None for cluster-wide listing.
+        namespace: Kubernetes namespace to list clusters from. If not provided, uses
+                  the current namespace from your Kubernetes context. To list clusters
+                  in a different namespace, specify it explicitly.
         detail_level: Level of detail in the response. Use 'concise' for a quick
                      overview or 'detailed' for comprehensive information including
                      conditions, resources, and configurations.
-    
+
     Returns:
         A formatted string containing cluster information. Returns human-readable
         status information for each cluster including name, namespace, health status,
         number of ready instances, and current primary pod.
-    
+
     Examples:
-        - List all clusters: list_postgres_clusters()
-        - List clusters in a namespace: list_postgres_clusters(namespace="production")
+        - List clusters in current namespace: list_postgres_clusters()
+        - List clusters in a specific namespace: list_postgres_clusters(namespace="production")
         - Get detailed information: list_postgres_clusters(detail_level="detailed")
-    
+
     Error Handling:
-        - If RBAC permissions are insufficient, ensure the service account has 'get' and
-          'list' permissions for postgresql.cnpg.io/clusters resources.
+        - If RBAC permissions are insufficient, ensure you have 'get' and 'list'
+          permissions for postgresql.cnpg.io/clusters resources in the namespace.
         - If no clusters are found, returns a message indicating empty results.
     """
     try:

@@ -14,6 +14,7 @@ touch "${codex_dir}/config.toml"
 
 touch "${vscode_project_root}/local.env"
 touch "${vscode_project_root}/kube-config"
+mkdir -p "${vscode_project_root}/kube-cache"
 
 echo "Ensured:"
 echo " - ${claude_dir}/.claude"
