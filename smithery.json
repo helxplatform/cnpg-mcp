@@ -29,7 +29,7 @@
     "high-availability"
   ],
   "runtime": "python",
-  "entrypoint": "cnpg_mcp_server.py",
+  "entrypoint": "cnpg-mcp-server",
   "requirements": "requirements.txt",
   "configuration": {
     "transport": "stdio",

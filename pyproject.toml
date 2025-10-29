@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cnpg-mcp-server"
+version = "1.2.0"
+description = "MCP server for managing PostgreSQL clusters using CloudNativePG in Kubernetes"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "helxplatform"}
+]
+requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database",
+    "Topic :: System :: Systems Administration",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+keywords = [
+    "postgresql",
+    "postgres",
+    "cloudnativepg",
+    "cnpg",
+    "kubernetes",
+    "k8s",
+    "database",
+    "mcp",
+    "cluster-management",
+    "ha",
+    "high-availability"
+]
+dependencies = [
+    "fastmcp>=0.3.0",
+    "kubernetes>=28.0.0",
+    "pydantic>=2.0.0",
+    "pyyaml>=6.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+    "mypy>=1.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/helxplatform/cnpg-mcp"
+Documentation = "https://github.com/helxplatform/cnpg-mcp#readme"
+Repository = "https://github.com/helxplatform/cnpg-mcp"
+"Bug Tracker" = "https://github.com/helxplatform/cnpg-mcp/issues"
+
+[project.scripts]
+cnpg-mcp-server = "cnpg_mcp_server:run"
+
+[tool.setuptools]
+py-modules = ["cnpg_mcp_server"]
