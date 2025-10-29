@@ -199,6 +199,16 @@ Deploy as a Kubernetes service that can be accessed by your LLM application.
 
 ## Available Tools
 
+**Enhanced Output Formats:** 4 tools support optional JSON format for programmatic consumption:
+- `list_postgres_clusters(format="json")` - Structured cluster list
+- `get_cluster_status(format="json")` - Structured cluster details
+- `list_postgres_roles(format="json")` - Structured role list
+- `list_postgres_databases(format="json")` - Structured database list
+
+All other tools return human-readable text optimized for LLM consumption.
+
+---
+
 ### Cluster Management
 
 #### 1. list_postgres_clusters
@@ -208,10 +218,21 @@ List all PostgreSQL clusters in the Kubernetes cluster.
 **Parameters:**
 - `namespace` (optional): Filter by namespace. If not provided, uses the current namespace from your Kubernetes context
 - `detail_level`: "concise" (default) or "detailed"
+- `format`: "text" (default) or "json" - Output format for programmatic consumption
 
 **Example:**
 ```
 List all PostgreSQL clusters in production namespace
+```
+
+**JSON Output:**
+When `format="json"`, returns structured data like:
+```json
+{
+  "clusters": [...],
+  "count": 3,
+  "scope": "namespace 'production'"
+}
 ```
 
 #### 2. get_cluster_status
@@ -222,11 +243,14 @@ Get detailed status for a specific cluster.
 - `name` (required): Name of the cluster
 - `namespace` (optional): Namespace of the cluster. If not specified, uses the current namespace from your Kubernetes context
 - `detail_level`: "concise" (default) or "detailed"
+- `format`: "text" (default) or "json" - Output format for programmatic consumption
 
 **Example:**
 ```
 Get detailed status for the main-db cluster in production namespace
 ```
+
+**Note:** Supports JSON format for structured output.
 
 #### 3. create_postgres_cluster
 
@@ -287,11 +311,14 @@ List all PostgreSQL roles/users managed in a cluster.
 **Parameters:**
 - `cluster_name` (required): Name of the PostgreSQL cluster
 - `namespace` (optional): Namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context
+- `format`: "text" (default) or "json" - Output format for programmatic consumption
 
 **Example:**
 ```
 List all roles in the main-db cluster
 ```
+
+**Note:** Supports JSON format for structured output with role attributes.
 
 #### 7. create_postgres_role
 
@@ -352,11 +379,14 @@ List all PostgreSQL databases managed by Database CRDs for a cluster.
 **Parameters:**
 - `cluster_name` (required): Name of the PostgreSQL cluster
 - `namespace` (optional): Namespace where the cluster exists
+- `format`: "text" (default) or "json" - Output format for programmatic consumption
 
 **Example:**
 ```
 List all databases in the main-db cluster
 ```
+
+**Note:** Supports JSON format for structured output with database details.
 
 #### 11. create_postgres_database
 

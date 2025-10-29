@@ -471,7 +471,8 @@ class DeleteDatabaseInput(BaseModel):
 @mcp.tool()
 async def list_postgres_clusters(
     namespace: Optional[str] = None,
-    detail_level: Literal["concise", "detailed"] = "concise"
+    detail_level: Literal["concise", "detailed"] = "concise",
+    format: Literal["text", "json"] = "text"
 ) -> str:
     """
     List all PostgreSQL clusters managed by CloudNativePG.
@@ -487,16 +488,20 @@ async def list_postgres_clusters(
         detail_level: Level of detail in the response. Use 'concise' for a quick
                      overview or 'detailed' for comprehensive information including
                      conditions, resources, and configurations.
+        format: Output format. 'text' for human-readable (default), 'json' for structured
+               data that can be programmatically consumed.
 
     Returns:
         A formatted string containing cluster information. Returns human-readable
         status information for each cluster including name, namespace, health status,
-        number of ready instances, and current primary pod.
+        number of ready instances, and current primary pod. If format='json', returns
+        a JSON string with structured data.
 
     Examples:
         - List clusters in current namespace: list_postgres_clusters()
         - List clusters in a specific namespace: list_postgres_clusters(namespace="production")
         - Get detailed information: list_postgres_clusters(detail_level="detailed")
+        - Get JSON output: list_postgres_clusters(format="json")
 
     Error Handling:
         - If RBAC permissions are insufficient, ensure you have 'get' and 'list'
@@ -505,18 +510,53 @@ async def list_postgres_clusters(
     """
     try:
         clusters = await list_cnpg_clusters(namespace)
-        
+
         if not clusters:
             scope = f"in namespace '{namespace}'" if namespace else "cluster-wide"
+            if format == "json":
+                return json.dumps({"clusters": [], "count": 0, "scope": scope})
             return f"No PostgreSQL clusters found {scope}."
-        
+
+        if format == "json":
+            # Return structured JSON
+            cluster_list = []
+            for cluster in clusters:
+                metadata = cluster.get('metadata', {})
+                spec = cluster.get('spec', {})
+                status = cluster.get('status', {})
+
+                cluster_data = {
+                    "name": metadata.get('name', 'unknown'),
+                    "namespace": metadata.get('namespace', 'unknown'),
+                    "instances": spec.get('instances', 0),
+                    "ready_instances": status.get('readyInstances', 0),
+                    "phase": status.get('phase', 'Unknown'),
+                    "current_primary": status.get('currentPrimary', 'unknown')
+                }
+
+                if detail_level == "detailed":
+                    cluster_data.update({
+                        "postgres_version": spec.get('imageName', 'unknown'),
+                        "storage_size": spec.get('storage', {}).get('size', 'unknown'),
+                        "conditions": status.get('conditions', [])
+                    })
+
+                cluster_list.append(cluster_data)
+
+            return json.dumps({
+                "clusters": cluster_list,
+                "count": len(cluster_list),
+                "scope": f"namespace '{namespace}'" if namespace else "all namespaces"
+            }, indent=2)
+
+        # Default: human-readable text
         result = f"Found {len(clusters)} PostgreSQL cluster(s):\n\n"
-        
+
         for cluster in clusters:
             result += format_cluster_status(cluster, detail_level) + "\n"
-        
+
         return truncate_response(result)
-    
+
     except Exception as e:
         return format_error_message(e, "listing PostgreSQL clusters")
 
@@ -525,7 +565,8 @@ async def list_postgres_clusters(
 async def get_cluster_status(
     name: str,
     namespace: Optional[str] = None,
-    detail_level: Literal["concise", "detailed"] = "concise"
+    detail_level: Literal["concise", "detailed"] = "concise",
+    format: Literal["text", "json"] = "text"
 ) -> str:
     """
     Get detailed status information for a specific PostgreSQL cluster.
@@ -543,16 +584,19 @@ async def get_cluster_status(
         detail_level: Level of detail. 'concise' provides essential status information,
                      'detailed' includes conditions, events, resource usage, and full
                      configuration.
+        format: Output format. 'text' for human-readable (default), 'json' for structured
+               data that can be programmatically consumed.
 
     Returns:
         Formatted string with cluster status information including phase, ready instances,
         primary pod, PostgreSQL version, storage configuration, and detailed conditions
-        if requested.
+        if requested. If format='json', returns a JSON string with structured data.
 
     Examples:
         - get_cluster_status(name="main-db")  # Uses current context namespace
         - get_cluster_status(name="main-db", namespace="production")
         - get_cluster_status(name="test-db", detail_level="detailed")
+        - get_cluster_status(name="main-db", format="json")
 
     Error Handling:
         - Returns 404 if cluster doesn't exist: Double-check the namespace and name.
@@ -565,6 +609,35 @@ async def get_cluster_status(
             namespace = get_current_namespace()
 
         cluster = await get_cnpg_cluster(namespace, name)
+
+        if format == "json":
+            # Return structured JSON
+            metadata = cluster.get('metadata', {})
+            spec = cluster.get('spec', {})
+            status = cluster.get('status', {})
+
+            cluster_data = {
+                "name": metadata.get('name', 'unknown'),
+                "namespace": metadata.get('namespace', 'unknown'),
+                "instances": spec.get('instances', 0),
+                "ready_instances": status.get('readyInstances', 0),
+                "phase": status.get('phase', 'Unknown'),
+                "current_primary": status.get('currentPrimary', 'unknown'),
+                "postgres_version": spec.get('imageName', 'unknown'),
+                "storage_size": spec.get('storage', {}).get('size', 'unknown')
+            }
+
+            if detail_level == "detailed":
+                cluster_data.update({
+                    "storage_class": spec.get('storage', {}).get('storageClass'),
+                    "conditions": status.get('conditions', []),
+                    "postgresql_parameters": spec.get('postgresql', {}).get('parameters', {}),
+                    "managed_roles": spec.get('managed', {}).get('roles', [])
+                })
+
+            return json.dumps(cluster_data, indent=2)
+
+        # Default: human-readable text
         result = format_cluster_status(cluster, detail_level)
         return truncate_response(result)
 
@@ -988,7 +1061,8 @@ The cluster will no longer appear in list_postgres_clusters() once deletion is c
 @mcp.tool()
 async def list_postgres_roles(
     cluster_name: str,
-    namespace: Optional[str] = None
+    namespace: Optional[str] = None,
+    format: Literal["text", "json"] = "text"
 ) -> str:
     """
     List all PostgreSQL roles/users managed in a cluster.
@@ -998,9 +1072,12 @@ async def list_postgres_roles(
     Args:
         cluster_name: Name of the PostgreSQL cluster.
         namespace: Kubernetes namespace where the cluster exists.
+        format: Output format. 'text' for human-readable (default), 'json' for structured
+               data that can be programmatically consumed.
 
     Returns:
-        Formatted list of roles with their attributes.
+        Formatted list of roles with their attributes. If format='json', returns a JSON
+        string with structured data.
     """
     try:
         if namespace is None:
@@ -1011,8 +1088,39 @@ async def list_postgres_roles(
         managed_roles = cluster.get('spec', {}).get('managed', {}).get('roles', [])
 
         if not managed_roles:
+            if format == "json":
+                return json.dumps({
+                    "cluster": f"{namespace}/{cluster_name}",
+                    "roles": [],
+                    "count": 0
+                })
             return f"No managed roles defined in cluster '{namespace}/{cluster_name}'.\n\nRoles are managed through the Cluster CRD's .spec.managed.roles field."
 
+        if format == "json":
+            # Return structured JSON
+            role_list = []
+            for role in managed_roles:
+                role_data = {
+                    "name": role.get('name', 'unknown'),
+                    "ensure": role.get('ensure', 'present'),
+                    "login": role.get('login', False),
+                    "superuser": role.get('superuser', False),
+                    "inherit": role.get('inherit', True),
+                    "createdb": role.get('createdb', False),
+                    "createrole": role.get('createrole', False),
+                    "replication": role.get('replication', False),
+                    "password_secret": role.get('passwordSecret', {}).get('name', 'none'),
+                    "in_roles": role.get('inRoles', [])
+                }
+                role_list.append(role_data)
+
+            return json.dumps({
+                "cluster": f"{namespace}/{cluster_name}",
+                "roles": role_list,
+                "count": len(role_list)
+            }, indent=2)
+
+        # Default: human-readable text
         result = f"PostgreSQL Roles managed in cluster '{namespace}/{cluster_name}':\n\n"
 
         for role in managed_roles:
@@ -1375,7 +1483,8 @@ The CloudNativePG operator will drop this role from the database.
 @mcp.tool()
 async def list_postgres_databases(
     cluster_name: str,
-    namespace: Optional[str] = None
+    namespace: Optional[str] = None,
+    format: Literal["text", "json"] = "text"
 ) -> str:
     """
     List all PostgreSQL databases managed by Database CRDs for a cluster.
@@ -1383,9 +1492,12 @@ async def list_postgres_databases(
     Args:
         cluster_name: Name of the PostgreSQL cluster.
         namespace: Kubernetes namespace where the cluster exists.
+        format: Output format. 'text' for human-readable (default), 'json' for structured
+               data that can be programmatically consumed.
 
     Returns:
-        Formatted list of databases with their details.
+        Formatted list of databases with their details. If format='json', returns a JSON
+        string with structured data.
     """
     try:
         if namespace is None:
@@ -1408,8 +1520,37 @@ async def list_postgres_databases(
         ]
 
         if not cluster_databases:
+            if format == "json":
+                return json.dumps({
+                    "cluster": f"{namespace}/{cluster_name}",
+                    "databases": [],
+                    "count": 0
+                })
             return f"No managed databases found for cluster '{namespace}/{cluster_name}'.\n\nDatabases are managed through Database CRDs."
 
+        if format == "json":
+            # Return structured JSON
+            database_list = []
+            for db in cluster_databases:
+                spec = db.get('spec', {})
+                metadata = db.get('metadata', {})
+
+                db_data = {
+                    "crd_name": metadata.get('name', 'unknown'),
+                    "database_name": spec.get('name', 'unknown'),
+                    "owner": spec.get('owner', 'unknown'),
+                    "ensure": spec.get('ensure', 'present'),
+                    "reclaim_policy": spec.get('databaseReclaimPolicy', 'retain')
+                }
+                database_list.append(db_data)
+
+            return json.dumps({
+                "cluster": f"{namespace}/{cluster_name}",
+                "databases": database_list,
+                "count": len(database_list)
+            }, indent=2)
+
+        # Default: human-readable text
         result = f"PostgreSQL Databases for cluster '{namespace}/{cluster_name}':\n\n"
 
         for db in cluster_databases:

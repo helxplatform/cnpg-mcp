@@ -151,12 +151,56 @@ For production, uncomment `uvicorn` in requirements.txt and run behind a reverse
 3. **Server startup:** ✅ Help command works
 4. **Runtime fix:** ✅ Fixed asyncio event loop conflict
 
+## JSON Format Enhancement
+
+After the FastMCP migration, we added optional JSON format output to improve programmatic consumption:
+
+### Enhanced Tools (4/12)
+- `list_postgres_clusters(format="json")` - Structured cluster list
+- `get_cluster_status(format="json")` - Structured cluster details
+- `list_postgres_roles(format="json")` - Structured role list
+- `list_postgres_databases(format="json")` - Structured database list
+
+### Benefits
+✅ **Programmatic consumption**: Easy to parse for downstream tools
+✅ **LLM-friendly**: Structured data is easier for AI models to process
+✅ **Type safety**: Fields are consistently typed (strings, ints, bools)
+✅ **Composability**: JSON output can be piped to jq, stored, or analyzed
+✅ **Backward compatible**: Default remains human-readable text
+✅ **Consistent structure**: All list tools follow same pattern (items, count)
+
+### Code Impact
+- Added 134 lines for JSON formatting logic
+- Final size: 1,880 lines (still 15.8% smaller than original)
+- All tools maintain backward compatibility
+
+### Example Usage
+```python
+# Default: human-readable text
+list_postgres_clusters()
+
+# Structured JSON for programmatic use
+list_postgres_clusters(format="json")
+
+# Detailed JSON with full cluster config
+get_cluster_status(name="my-db", detail_level="detailed", format="json")
+```
+
+### JSON Structure
+```json
+{
+  "clusters": [...],
+  "count": 3,
+  "scope": "namespace 'default'"
+}
+```
+
 ## Next Steps
 
-1. Test with Claude Desktop to verify stdio transport works
+1. ✅ Test with Claude Desktop to verify stdio transport works
 2. Test HTTP transport if needed: `python cnpg_mcp_server.py --transport http`
 3. If all tests pass, merge `fastmcp` branch to `develop`
-4. Update README to mention FastMCP benefits
+4. Update README to mention FastMCP benefits and JSON format support
 
 ## Rollback Plan
 
