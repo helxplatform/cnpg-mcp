@@ -7,9 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This is a **Model Context Protocol (MCP) server** for managing PostgreSQL clusters using the CloudNativePG operator in Kubernetes. It provides a bridge between LLMs and CloudNativePG resources, enabling natural language interaction with PostgreSQL cluster lifecycle management.
 
 **Key characteristics:**
-- Python-based MCP server using the official `mcp` SDK
+- Python-based MCP server using **FastMCP** (simplified MCP SDK with auto-schema generation)
 - Kubernetes client interacting with CloudNativePG Custom Resources (CRDs)
-- Designed for transport-agnostic architecture (currently stdio, future HTTP/SSE support)
+- Designed for transport-agnostic architecture (stdio for local, HTTP/SSE for remote)
 - All operations are async using Python asyncio
 
 ## Development Commands
@@ -112,35 +112,52 @@ CloudNativePG Operator
 ```
 
 **Key architectural points:**
-- All tool functions work with any transport mode
+- **FastMCP auto-generates schemas** from function signatures and docstrings - no manual schema definitions needed
+- All tool functions work with any transport mode (just add `@mcp.tool()` decorator)
 - Transport selection happens at startup via `main()` → `run_stdio_transport()` or `run_http_transport()`
-- Kubernetes clients initialized once globally: `custom_api` (CustomObjectsApi) and `core_api` (CoreV1Api)
+- Kubernetes clients initialized lazily on first use: `custom_api` (CustomObjectsApi) and `core_api` (CoreV1Api)
 - All I/O operations use `asyncio.to_thread()` to prevent blocking the event loop
 
 ### Core Components
 
-**cnpg_mcp_server.py** (single-file architecture, ~712 lines):
-- Lines 1-60: Imports, configuration, Kubernetes client initialization
-- Lines 61-120: Utility functions (`truncate_response`, `format_error_message`)
-- Lines 121-189: Kubernetes API helpers (`get_cnpg_cluster`, `list_cnpg_clusters`, `format_cluster_status`)
-- Lines 190-268: Pydantic models for input validation
-- Lines 269-590: MCP tool implementations (4 tools: list, get, create, scale)
-- Lines 591-640: Transport implementations (`run_stdio_transport`, `run_http_transport`)
-- Lines 641-712: CLI argument parsing and main entry point
+**cnpg_mcp_server.py** (single-file architecture, ~1,746 lines):
+- Lines 1-120: Imports, configuration, Kubernetes client initialization (lazy)
+- Lines 121-257: Utility functions and Kubernetes API helpers
+- Lines 258-466: Pydantic models for input validation (12 tools)
+- Lines 467-1575: MCP tool implementations decorated with `@mcp.tool()`:
+  - Cluster management: list, get, create, scale, delete
+  - Role management: list, create, update, delete
+  - Database management: list, create, delete
+- Lines 1576-1667: Transport implementations (`run_stdio_transport`, `run_http_transport`)
+- Lines 1668-1746: CLI argument parsing and main entry point
 
 ### MCP Tools
 
-The server exposes 4 tools to LLMs:
+The server exposes 12 tools to LLMs:
 
-1. **list_postgres_clusters** (line 276): List all clusters with optional namespace filtering
-2. **get_cluster_status** (line 328): Get detailed status for a specific cluster
-3. **create_postgres_cluster** (line 373): Create new PostgreSQL cluster with HA configuration
-4. **scale_postgres_cluster** (line 499): Scale cluster by adjusting instance count
+**Cluster Management:**
+1. **list_postgres_clusters**: List all clusters with optional namespace filtering
+2. **get_cluster_status**: Get detailed status for a specific cluster
+3. **create_postgres_cluster**: Create new PostgreSQL cluster with HA configuration
+4. **scale_postgres_cluster**: Scale cluster by adjusting instance count
+5. **delete_postgres_cluster**: Delete cluster with safety confirmation
 
-**Tool implementation pattern:**
-- Decorated with `@mcp.tool()`
+**Role/User Management:**
+6. **list_postgres_roles**: List all roles in a cluster
+7. **create_postgres_role**: Create role with auto-generated password stored in K8s secret
+8. **update_postgres_role**: Update role attributes and password
+9. **delete_postgres_role**: Delete role and associated secret
+
+**Database Management:**
+10. **list_postgres_databases**: List databases managed by Database CRDs
+11. **create_postgres_database**: Create database with reclaim policy
+12. **delete_postgres_database**: Delete Database CRD (actual deletion depends on policy)
+
+**Tool implementation pattern (FastMCP simplified):**
+- Decorated with `@mcp.tool()` - that's it! No manual schema needed
+- FastMCP auto-generates schemas from function signatures and docstrings
 - Comprehensive docstrings with Args, Returns, Examples, Error Handling sections
-- Use Pydantic models for input validation (though not explicitly enforced in decorator)
+- Type hints (Pydantic models, Literal, Optional) automatically become schema constraints
 - Return formatted strings optimized for LLM consumption
 - Error handling via `format_error_message()` with actionable suggestions
 
@@ -260,12 +277,13 @@ kubectl get secret <cluster-name>-app -o jsonpath='{.data.password}' | base64 -d
 
 ### Transport Modes
 
-- **stdio (default)**: Uses stdin/stdout, perfect for Claude Desktop, single client only
-- **HTTP (future)**: Requires implementing `run_http_transport()` skeleton at line 604-640
-  - Uncomment dependencies in requirements.txt
-  - Implement SSE transport using `mcp.server.sse.SseServerTransport`
-  - Add authentication middleware (required for production)
-  - See HTTP_TRANSPORT_GUIDE.md for full implementation guide
+- **stdio (default)**: Uses stdin/stdout via `mcp.run_stdio_async()`, perfect for Claude Desktop, single client only
+- **HTTP/SSE (ready to use)**: FastMCP makes this trivial via `mcp.run_sse_async(host, port)`
+  - Already implemented in `run_http_transport()` at line ~1633
+  - Just uncomment uvicorn in requirements.txt if needed for production deployment
+  - FastMCP provides built-in SSE transport, authentication hooks, and CORS handling
+  - Add authentication using `@mcp.auth` decorator (see code comments)
+  - For production: run behind reverse proxy (nginx/traefik) for TLS
 
 ### Kubernetes Configuration
 
@@ -307,15 +325,25 @@ python -c "from kubernetes import config; config.load_kube_config(); print('OK')
 
 ### Extending Tool Capabilities
 
-Current tools are focused on cluster lifecycle (list, get, create, scale). Natural extensions:
+**Currently implemented (12 tools):**
+- ✅ Cluster lifecycle: list, get, create, scale, delete
+- ✅ Role/user management: list, create, update, delete (with K8s secret management)
+- ✅ Database operations: list, create, delete (via Database CRDs)
 
+**Natural extensions for future:**
 - Backup management (list_backups, create_backup, restore_backup)
 - Pod logs retrieval (get_cluster_logs)
-- Connection information (get_connection_info)
-- Database operations (create_database, create_user) - with safety guardrails
+- Connection information with automatic secret decoding (get_connection_info)
 - Monitoring metrics integration
+- Pooler management (PgBouncer)
+- Certificate and TLS management
 
-When adding these, follow the existing patterns for async operations, error handling, and response formatting.
+**When adding new tools with FastMCP:**
+1. Add `@mcp.tool()` decorator to your async function
+2. Use type hints (Pydantic models, Literal, Optional) for parameters
+3. Write comprehensive docstring - FastMCP auto-generates schema from it
+4. Follow existing patterns for async operations, error handling, and response formatting
+5. That's it! No manual schema definition needed.
 
 ### Deployment Considerations
 
