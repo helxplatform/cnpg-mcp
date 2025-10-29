@@ -1,20 +1,15 @@
-# Smithery configuration file: https://smithery.ai/docs/config#smitheryyaml
-
-startCommand:
-  type: stdio
-  configSchema:
-    # JSON Schema defining the configuration options for the MCP.
-    type: object
-    properties:
-      kubeconfig:
-        type: string
-        description: Path to Kubernetes config file (optional, defaults to ~/.kube/config)
-        default: "~/.kube/config"
-  commandFunction:
-    # A function that produces the CLI command to start the MCP on stdio.
-    # Smithery uses uvx to run Python packages in isolated environments
-    |-
-    config => {
-      const env = config.kubeconfig ? { KUBECONFIG: config.kubeconfig } : {};
-      return { command: 'uvx', args: ['cnpg-mcp-server'], env };
-    }
+# smithery.yaml
+name: cnpg-mcp-server
+description: MCP server for managing PostgreSQL clusters using CloudNativePG in Kubernetes
+transport: stdio  # Local transport
+installation:
+  type: local     # This is key - tells Smithery it's not hosted
+  command: uvx
+  args:
+    - --from
+    - git+https://github.com/helxplatform/cnpg-mcp.git
+    - cnpg-mcp-server
+env:
+  KUBECONFIG:
+    description: Path to Kubernetes config file (optional, defaults to ~/.kube/config)
+    required: false
