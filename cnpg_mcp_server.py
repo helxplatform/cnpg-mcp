@@ -1620,57 +1620,50 @@ async def run_stdio_transport():
     This is the default mode for local usage with Claude Desktop.
     The server communicates via stdin/stdout and is managed as a child process.
 
-    FastMCP simplifies this - just call .run() and it handles everything!
+    FastMCP simplifies this - use run_stdio_async() for existing event loops!
     """
     print("Starting CloudNativePG MCP server with stdio transport...", file=sys.stderr)
     print(f"Python version: {sys.version}", file=sys.stderr)
     print(f"FastMCP server initialized with name: cloudnative-pg", file=sys.stderr)
 
-    # FastMCP handles stdio transport automatically
-    await mcp.run(transport="stdio")
+    # Use run_stdio_async() since we're already in an asyncio event loop
+    await mcp.run_stdio_async()
 
 
 async def run_http_transport(host: str = "0.0.0.0", port: int = 3000):
     """
     Run the MCP server using HTTP/SSE transport.
-    
+
     This mode allows multiple clients to connect remotely and is suitable
     for team environments and production deployments.
-    
-    TODO: Implement HTTP transport when needed
-    - Install: pip install mcp[sse] starlette uvicorn
-    - Add SSE endpoints for event streaming
-    - Add POST endpoint for client messages
-    - Implement authentication/authorization
-    - Add TLS support for production
+
+    FastMCP makes HTTP/SSE transport simple with run_sse_async()!
     """
-    raise NotImplementedError(
-        "HTTP transport is not yet implemented. "
-        "For now, use stdio transport (default mode).\n"
-        "To add HTTP support, install: pip install mcp[sse] starlette uvicorn"
-    )
-    
-    # Future implementation structure:
-    # from mcp.server.sse import SseServerTransport
-    # from starlette.applications import Starlette
-    # from starlette.routing import Route
-    # import uvicorn
+    print(f"Starting CloudNativePG MCP server with HTTP/SSE transport on {host}:{port}...", file=sys.stderr)
+    print(f"FastMCP server initialized with name: cloudnative-pg", file=sys.stderr)
+
+    # FastMCP handles HTTP/SSE transport automatically
+    # This will create a server that can handle multiple concurrent clients
+    await mcp.run_sse_async(host=host, port=port)
+
+    # FastMCP automatically provides:
+    # - GET /sse - Server-Sent Events endpoint for bidirectional communication
+    # - POST /message - Endpoint for client messages
+    # - Built-in authentication support (via mcp.auth)
+    # - CORS handling
+    # - Error handling
     #
-    # sse_transport = SseServerTransport("/messages")
+    # To add authentication:
+    # @mcp.auth
+    # async def authenticate(request):
+    #     # Verify API key, JWT, etc.
+    #     return True  # or raise an exception
     #
-    # async def handle_sse(request):
-    #     async with sse_transport.connect_sse(...) as streams:
-    #         await mcp.run(streams[0], streams[1], ...)
-    #
-    # async def handle_messages(request):
-    #     await sse_transport.handle_post_message(request)
-    #
-    # app = Starlette(routes=[
-    #     Route("/sse", endpoint=handle_sse),
-    #     Route("/messages", endpoint=handle_messages, methods=["POST"]),
-    # ])
-    #
-    # uvicorn.run(app, host=host, port=port)
+    # For production:
+    # - Run behind a reverse proxy (nginx, traefik) for TLS
+    # - Set FASTMCP_AUTH_SECRET environment variable
+    # - Consider rate limiting
+    # - Enable audit logging
 
 
 # ============================================================================
