@@ -21,8 +21,7 @@ import yaml
 from typing import Any, Dict, List, Optional, Literal
 from datetime import datetime
 
-from mcp.server import Server
-from mcp.types import Tool, TextContent, Resource, Prompt
+from fastmcp import FastMCP
 from pydantic import BaseModel, Field
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
@@ -44,8 +43,8 @@ TRANSPORT_MODE = "stdio"  # or "http"
 # Server Initialization
 # ============================================================================
 
-# Initialize MCP server
-mcp = Server("cloudnative-pg")
+# Initialize FastMCP server
+mcp = FastMCP("cloudnative-pg")
 
 # Kubernetes clients (initialized lazily)
 custom_api: Optional[client.CustomObjectsApi] = None
@@ -469,9 +468,11 @@ class DeleteDatabaseInput(BaseModel):
 # MCP Tools - Implementation Functions
 # ============================================================================
 
+@mcp.tool()
 async def list_postgres_clusters(
     namespace: Optional[str] = None,
-    detail_level: Literal["concise", "detailed"] = "concise"
+    detail_level: Literal["concise", "detailed"] = "concise",
+    format: Literal["text", "json"] = "text"
 ) -> str:
     """
     List all PostgreSQL clusters managed by CloudNativePG.
@@ -487,16 +488,20 @@ async def list_postgres_clusters(
         detail_level: Level of detail in the response. Use 'concise' for a quick
                      overview or 'detailed' for comprehensive information including
                      conditions, resources, and configurations.
+        format: Output format. 'text' for human-readable (default), 'json' for structured
+               data that can be programmatically consumed.
 
     Returns:
         A formatted string containing cluster information. Returns human-readable
         status information for each cluster including name, namespace, health status,
-        number of ready instances, and current primary pod.
+        number of ready instances, and current primary pod. If format='json', returns
+        a JSON string with structured data.
 
     Examples:
         - List clusters in current namespace: list_postgres_clusters()
         - List clusters in a specific namespace: list_postgres_clusters(namespace="production")
         - Get detailed information: list_postgres_clusters(detail_level="detailed")
+        - Get JSON output: list_postgres_clusters(format="json")
 
     Error Handling:
         - If RBAC permissions are insufficient, ensure you have 'get' and 'list'
@@ -505,26 +510,63 @@ async def list_postgres_clusters(
     """
     try:
         clusters = await list_cnpg_clusters(namespace)
-        
+
         if not clusters:
             scope = f"in namespace '{namespace}'" if namespace else "cluster-wide"
+            if format == "json":
+                return json.dumps({"clusters": [], "count": 0, "scope": scope})
             return f"No PostgreSQL clusters found {scope}."
-        
+
+        if format == "json":
+            # Return structured JSON
+            cluster_list = []
+            for cluster in clusters:
+                metadata = cluster.get('metadata', {})
+                spec = cluster.get('spec', {})
+                status = cluster.get('status', {})
+
+                cluster_data = {
+                    "name": metadata.get('name', 'unknown'),
+                    "namespace": metadata.get('namespace', 'unknown'),
+                    "instances": spec.get('instances', 0),
+                    "ready_instances": status.get('readyInstances', 0),
+                    "phase": status.get('phase', 'Unknown'),
+                    "current_primary": status.get('currentPrimary', 'unknown')
+                }
+
+                if detail_level == "detailed":
+                    cluster_data.update({
+                        "postgres_version": spec.get('imageName', 'unknown'),
+                        "storage_size": spec.get('storage', {}).get('size', 'unknown'),
+                        "conditions": status.get('conditions', [])
+                    })
+
+                cluster_list.append(cluster_data)
+
+            return json.dumps({
+                "clusters": cluster_list,
+                "count": len(cluster_list),
+                "scope": f"namespace '{namespace}'" if namespace else "all namespaces"
+            }, indent=2)
+
+        # Default: human-readable text
         result = f"Found {len(clusters)} PostgreSQL cluster(s):\n\n"
-        
+
         for cluster in clusters:
             result += format_cluster_status(cluster, detail_level) + "\n"
-        
+
         return truncate_response(result)
-    
+
     except Exception as e:
         return format_error_message(e, "listing PostgreSQL clusters")
 
 
+@mcp.tool()
 async def get_cluster_status(
     name: str,
     namespace: Optional[str] = None,
-    detail_level: Literal["concise", "detailed"] = "concise"
+    detail_level: Literal["concise", "detailed"] = "concise",
+    format: Literal["text", "json"] = "text"
 ) -> str:
     """
     Get detailed status information for a specific PostgreSQL cluster.
@@ -542,16 +584,19 @@ async def get_cluster_status(
         detail_level: Level of detail. 'concise' provides essential status information,
                      'detailed' includes conditions, events, resource usage, and full
                      configuration.
+        format: Output format. 'text' for human-readable (default), 'json' for structured
+               data that can be programmatically consumed.
 
     Returns:
         Formatted string with cluster status information including phase, ready instances,
         primary pod, PostgreSQL version, storage configuration, and detailed conditions
-        if requested.
+        if requested. If format='json', returns a JSON string with structured data.
 
     Examples:
         - get_cluster_status(name="main-db")  # Uses current context namespace
         - get_cluster_status(name="main-db", namespace="production")
         - get_cluster_status(name="test-db", detail_level="detailed")
+        - get_cluster_status(name="main-db", format="json")
 
     Error Handling:
         - Returns 404 if cluster doesn't exist: Double-check the namespace and name.
@@ -564,6 +609,35 @@ async def get_cluster_status(
             namespace = get_current_namespace()
 
         cluster = await get_cnpg_cluster(namespace, name)
+
+        if format == "json":
+            # Return structured JSON
+            metadata = cluster.get('metadata', {})
+            spec = cluster.get('spec', {})
+            status = cluster.get('status', {})
+
+            cluster_data = {
+                "name": metadata.get('name', 'unknown'),
+                "namespace": metadata.get('namespace', 'unknown'),
+                "instances": spec.get('instances', 0),
+                "ready_instances": status.get('readyInstances', 0),
+                "phase": status.get('phase', 'Unknown'),
+                "current_primary": status.get('currentPrimary', 'unknown'),
+                "postgres_version": spec.get('imageName', 'unknown'),
+                "storage_size": spec.get('storage', {}).get('size', 'unknown')
+            }
+
+            if detail_level == "detailed":
+                cluster_data.update({
+                    "storage_class": spec.get('storage', {}).get('storageClass'),
+                    "conditions": status.get('conditions', []),
+                    "postgresql_parameters": spec.get('postgresql', {}).get('parameters', {}),
+                    "managed_roles": spec.get('managed', {}).get('roles', [])
+                })
+
+            return json.dumps(cluster_data, indent=2)
+
+        # Default: human-readable text
         result = format_cluster_status(cluster, detail_level)
         return truncate_response(result)
 
@@ -571,6 +645,7 @@ async def get_cluster_status(
         return format_error_message(e, f"getting cluster status for {namespace}/{name}")
 
 
+@mcp.tool()
 async def create_postgres_cluster(
     name: str,
     instances: int = 3,
@@ -806,6 +881,7 @@ kubectl get secret {cluster_name}-app -n {namespace} -o jsonpath='{{.data.passwo
         return format_error_message(e, f"creating cluster {namespace}/{name}")
 
 
+@mcp.tool()
 async def scale_postgres_cluster(
     name: str,
     instances: int,
@@ -875,6 +951,7 @@ get_cluster_status(namespace="{namespace}", name="{name}")
         return format_error_message(e, f"scaling cluster {namespace}/{name}")
 
 
+@mcp.tool()
 async def delete_postgres_cluster(
     name: str,
     confirm_deletion: bool = False,
@@ -981,9 +1058,11 @@ The cluster will no longer appear in list_postgres_clusters() once deletion is c
         return format_error_message(e, f"deleting cluster {namespace}/{name}")
 
 
+@mcp.tool()
 async def list_postgres_roles(
     cluster_name: str,
-    namespace: Optional[str] = None
+    namespace: Optional[str] = None,
+    format: Literal["text", "json"] = "text"
 ) -> str:
     """
     List all PostgreSQL roles/users managed in a cluster.
@@ -993,9 +1072,12 @@ async def list_postgres_roles(
     Args:
         cluster_name: Name of the PostgreSQL cluster.
         namespace: Kubernetes namespace where the cluster exists.
+        format: Output format. 'text' for human-readable (default), 'json' for structured
+               data that can be programmatically consumed.
 
     Returns:
-        Formatted list of roles with their attributes.
+        Formatted list of roles with their attributes. If format='json', returns a JSON
+        string with structured data.
     """
     try:
         if namespace is None:
@@ -1006,8 +1088,39 @@ async def list_postgres_roles(
         managed_roles = cluster.get('spec', {}).get('managed', {}).get('roles', [])
 
         if not managed_roles:
+            if format == "json":
+                return json.dumps({
+                    "cluster": f"{namespace}/{cluster_name}",
+                    "roles": [],
+                    "count": 0
+                })
             return f"No managed roles defined in cluster '{namespace}/{cluster_name}'.\n\nRoles are managed through the Cluster CRD's .spec.managed.roles field."
 
+        if format == "json":
+            # Return structured JSON
+            role_list = []
+            for role in managed_roles:
+                role_data = {
+                    "name": role.get('name', 'unknown'),
+                    "ensure": role.get('ensure', 'present'),
+                    "login": role.get('login', False),
+                    "superuser": role.get('superuser', False),
+                    "inherit": role.get('inherit', True),
+                    "createdb": role.get('createdb', False),
+                    "createrole": role.get('createrole', False),
+                    "replication": role.get('replication', False),
+                    "password_secret": role.get('passwordSecret', {}).get('name', 'none'),
+                    "in_roles": role.get('inRoles', [])
+                }
+                role_list.append(role_data)
+
+            return json.dumps({
+                "cluster": f"{namespace}/{cluster_name}",
+                "roles": role_list,
+                "count": len(role_list)
+            }, indent=2)
+
+        # Default: human-readable text
         result = f"PostgreSQL Roles managed in cluster '{namespace}/{cluster_name}':\n\n"
 
         for role in managed_roles:
@@ -1041,6 +1154,7 @@ async def list_postgres_roles(
         return format_error_message(e, f"listing roles in cluster {namespace}/{cluster_name}")
 
 
+@mcp.tool()
 async def create_postgres_role(
     cluster_name: str,
     role_name: str,
@@ -1176,6 +1290,7 @@ The CloudNativePG operator will reconcile this role in the database.
         return format_error_message(e, f"creating role {role_name} in cluster {namespace}/{cluster_name}")
 
 
+@mcp.tool()
 async def update_postgres_role(
     cluster_name: str,
     role_name: str,
@@ -1291,6 +1406,7 @@ The CloudNativePG operator will reconcile these changes in the database.
         return format_error_message(e, f"updating role {role_name} in cluster {namespace}/{cluster_name}")
 
 
+@mcp.tool()
 async def delete_postgres_role(
     cluster_name: str,
     role_name: str,
@@ -1364,9 +1480,11 @@ The CloudNativePG operator will drop this role from the database.
         return format_error_message(e, f"deleting role {role_name} from cluster {namespace}/{cluster_name}")
 
 
+@mcp.tool()
 async def list_postgres_databases(
     cluster_name: str,
-    namespace: Optional[str] = None
+    namespace: Optional[str] = None,
+    format: Literal["text", "json"] = "text"
 ) -> str:
     """
     List all PostgreSQL databases managed by Database CRDs for a cluster.
@@ -1374,9 +1492,12 @@ async def list_postgres_databases(
     Args:
         cluster_name: Name of the PostgreSQL cluster.
         namespace: Kubernetes namespace where the cluster exists.
+        format: Output format. 'text' for human-readable (default), 'json' for structured
+               data that can be programmatically consumed.
 
     Returns:
-        Formatted list of databases with their details.
+        Formatted list of databases with their details. If format='json', returns a JSON
+        string with structured data.
     """
     try:
         if namespace is None:
@@ -1399,8 +1520,37 @@ async def list_postgres_databases(
         ]
 
         if not cluster_databases:
+            if format == "json":
+                return json.dumps({
+                    "cluster": f"{namespace}/{cluster_name}",
+                    "databases": [],
+                    "count": 0
+                })
             return f"No managed databases found for cluster '{namespace}/{cluster_name}'.\n\nDatabases are managed through Database CRDs."
 
+        if format == "json":
+            # Return structured JSON
+            database_list = []
+            for db in cluster_databases:
+                spec = db.get('spec', {})
+                metadata = db.get('metadata', {})
+
+                db_data = {
+                    "crd_name": metadata.get('name', 'unknown'),
+                    "database_name": spec.get('name', 'unknown'),
+                    "owner": spec.get('owner', 'unknown'),
+                    "ensure": spec.get('ensure', 'present'),
+                    "reclaim_policy": spec.get('databaseReclaimPolicy', 'retain')
+                }
+                database_list.append(db_data)
+
+            return json.dumps({
+                "cluster": f"{namespace}/{cluster_name}",
+                "databases": database_list,
+                "count": len(database_list)
+            }, indent=2)
+
+        # Default: human-readable text
         result = f"PostgreSQL Databases for cluster '{namespace}/{cluster_name}':\n\n"
 
         for db in cluster_databases:
@@ -1425,6 +1575,7 @@ async def list_postgres_databases(
         return format_error_message(e, f"listing databases for cluster {namespace}/{cluster_name}")
 
 
+@mcp.tool()
 async def create_postgres_database(
     cluster_name: str,
     database_name: str,
@@ -1506,6 +1657,7 @@ kubectl get database {crd_name} -n {namespace}
         return format_error_message(e, f"creating database {database_name} in cluster {namespace}/{cluster_name}")
 
 
+@mcp.tool()
 async def delete_postgres_database(
     cluster_name: str,
     database_name: str,
@@ -1588,505 +1740,14 @@ The CloudNativePG operator will reconcile this change.
 
 
 # ============================================================================
-# MCP Server Handlers
+# Note: FastMCP Auto-generates Tool Schemas
 # ============================================================================
-
-@mcp.list_tools()
-async def list_tools() -> list[Tool]:
-    """List all available MCP tools."""
-    return [
-        Tool(
-            name="list_postgres_clusters",
-            description="List all PostgreSQL clusters managed by CloudNativePG. Use this to discover available clusters, check their health status, and understand the current state of your PostgreSQL infrastructure.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "namespace": {
-                        "type": "string",
-                        "description": "Kubernetes namespace to list clusters from. If not provided, lists clusters from all namespaces."
-                    },
-                    "detail_level": {
-                        "type": "string",
-                        "enum": ["concise", "detailed"],
-                        "description": "Level of detail in the response. Use 'concise' for a quick overview or 'detailed' for comprehensive information.",
-                        "default": "concise"
-                    }
-                }
-            }
-        ),
-        Tool(
-            name="get_cluster_status",
-            description="Get detailed status information for a specific PostgreSQL cluster. Use this to troubleshoot issues, verify cluster health, or get detailed insights into a specific cluster's operation.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Name of the CloudNativePG cluster."
-                    },
-                    "namespace": {
-                        "type": "string",
-                        "description": "Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
-                    },
-                    "detail_level": {
-                        "type": "string",
-                        "enum": ["concise", "detailed"],
-                        "description": "Level of detail. 'concise' provides essential status, 'detailed' includes conditions and full configuration.",
-                        "default": "concise"
-                    }
-                },
-                "required": ["name"]
-            }
-        ),
-        Tool(
-            name="create_postgres_cluster",
-            description="Create a new PostgreSQL cluster with CloudNativePG. This creates a high-availability PostgreSQL cluster with automatic replication, backups, and monitoring.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Name for the new cluster. Must be a valid Kubernetes resource name (lowercase alphanumeric or '-').",
-                        "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
-                    },
-                    "instances": {
-                        "type": "integer",
-                        "description": "Number of PostgreSQL instances. Use 1 for development, 3+ for production HA.",
-                        "default": 3,
-                        "minimum": 1,
-                        "maximum": 10
-                    },
-                    "storage_size": {
-                        "type": "string",
-                        "description": "Storage size per instance (e.g., '10Gi', '100Gi').",
-                        "default": "10Gi"
-                    },
-                    "postgres_version": {
-                        "type": "string",
-                        "description": "PostgreSQL major version (e.g., '14', '15', '16').",
-                        "default": "16"
-                    },
-                    "storage_class": {
-                        "type": "string",
-                        "description": "Kubernetes storage class. If not specified, uses the cluster default."
-                    },
-                    "wait": {
-                        "type": "boolean",
-                        "description": "Wait for the cluster to become operational before returning. If false (default), returns immediately after creation. Automatically set to false if instances > 5 to avoid waiting more than 5 minutes.",
-                        "default": False
-                    },
-                    "timeout": {
-                        "type": "integer",
-                        "description": "Maximum time in seconds to wait for cluster to become operational (only used if wait=true). If not specified, defaults to 60 seconds per instance. Must be between 30 and 600 seconds.",
-                        "minimum": 30,
-                        "maximum": 600
-                    },
-                    "namespace": {
-                        "type": "string",
-                        "description": "Kubernetes namespace where the cluster will be created. If not specified, uses the current namespace from your Kubernetes context. The namespace must exist."
-                    },
-                    "dry_run": {
-                        "type": "boolean",
-                        "description": "If true, returns the cluster definition without creating it. Useful for previewing the configuration before applying it. Default is false.",
-                        "default": False
-                    }
-                },
-                "required": ["name"]
-            }
-        ),
-        Tool(
-            name="scale_postgres_cluster",
-            description="Scale a PostgreSQL cluster by changing the number of instances. CloudNativePG handles the scaling process safely, ensuring data consistency.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Name of the cluster to scale."
-                    },
-                    "instances": {
-                        "type": "integer",
-                        "description": "New number of instances (1-10). For HA, use 3 or more.",
-                        "default": 3,
-                        "minimum": 1,
-                        "maximum": 10
-                    },
-                    "namespace": {
-                        "type": "string",
-                        "description": "Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
-                    }
-                },
-                "required": ["name", "instances"]
-            }
-        ),
-        Tool(
-            name="delete_postgres_cluster",
-            description="Delete a PostgreSQL cluster and its associated resources. This is a DESTRUCTIVE operation that permanently removes the cluster and all its data. Requires explicit confirmation to proceed.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Name of the cluster to delete."
-                    },
-                    "confirm_deletion": {
-                        "type": "boolean",
-                        "description": "Must be explicitly set to true to confirm deletion. If false or omitted, returns a warning message without deleting.",
-                        "default": False
-                    },
-                    "namespace": {
-                        "type": "string",
-                        "description": "Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
-                    }
-                },
-                "required": ["name"]
-            }
-        ),
-        Tool(
-            name="list_postgres_roles",
-            description="List all PostgreSQL roles/users in a cluster. Shows role attributes like login, superuser, createdb, etc.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "cluster_name": {
-                        "type": "string",
-                        "description": "Name of the PostgreSQL cluster."
-                    },
-                    "namespace": {
-                        "type": "string",
-                        "description": "Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
-                    }
-                },
-                "required": ["cluster_name"]
-            }
-        ),
-        Tool(
-            name="create_postgres_role",
-            description="Create a new PostgreSQL role/user in a cluster. Automatically generates a secure password and stores it in a Kubernetes secret.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "cluster_name": {
-                        "type": "string",
-                        "description": "Name of the PostgreSQL cluster."
-                    },
-                    "role_name": {
-                        "type": "string",
-                        "description": "Name of the role to create. Must start with a letter or underscore, followed by letters, numbers, or underscores.",
-                        "pattern": "^[a-z_][a-z0-9_]*$"
-                    },
-                    "login": {
-                        "type": "boolean",
-                        "description": "Allow role to log in.",
-                        "default": True
-                    },
-                    "superuser": {
-                        "type": "boolean",
-                        "description": "Grant superuser privileges.",
-                        "default": False
-                    },
-                    "inherit": {
-                        "type": "boolean",
-                        "description": "Inherit privileges from roles it is a member of.",
-                        "default": True
-                    },
-                    "createdb": {
-                        "type": "boolean",
-                        "description": "Allow role to create databases.",
-                        "default": False
-                    },
-                    "createrole": {
-                        "type": "boolean",
-                        "description": "Allow role to create other roles.",
-                        "default": False
-                    },
-                    "replication": {
-                        "type": "boolean",
-                        "description": "Allow role to initiate streaming replication.",
-                        "default": False
-                    },
-                    "namespace": {
-                        "type": "string",
-                        "description": "Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
-                    }
-                },
-                "required": ["cluster_name", "role_name"]
-            }
-        ),
-        Tool(
-            name="update_postgres_role",
-            description="Update attributes of an existing PostgreSQL role/user. Can modify permissions and password.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "cluster_name": {
-                        "type": "string",
-                        "description": "Name of the PostgreSQL cluster."
-                    },
-                    "role_name": {
-                        "type": "string",
-                        "description": "Name of the role to update."
-                    },
-                    "login": {
-                        "type": "boolean",
-                        "description": "Allow role to log in."
-                    },
-                    "superuser": {
-                        "type": "boolean",
-                        "description": "Grant superuser privileges."
-                    },
-                    "inherit": {
-                        "type": "boolean",
-                        "description": "Inherit privileges from roles it is a member of."
-                    },
-                    "createdb": {
-                        "type": "boolean",
-                        "description": "Allow role to create databases."
-                    },
-                    "createrole": {
-                        "type": "boolean",
-                        "description": "Allow role to create other roles."
-                    },
-                    "replication": {
-                        "type": "boolean",
-                        "description": "Allow role to initiate streaming replication."
-                    },
-                    "password": {
-                        "type": "string",
-                        "description": "New password for the role. If not specified, password remains unchanged."
-                    },
-                    "namespace": {
-                        "type": "string",
-                        "description": "Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
-                    }
-                },
-                "required": ["cluster_name", "role_name"]
-            }
-        ),
-        Tool(
-            name="delete_postgres_role",
-            description="Delete a PostgreSQL role/user from a cluster. Also deletes the associated Kubernetes secret containing the password.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "cluster_name": {
-                        "type": "string",
-                        "description": "Name of the PostgreSQL cluster."
-                    },
-                    "role_name": {
-                        "type": "string",
-                        "description": "Name of the role to delete."
-                    },
-                    "namespace": {
-                        "type": "string",
-                        "description": "Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
-                    }
-                },
-                "required": ["cluster_name", "role_name"]
-            }
-        ),
-        Tool(
-            name="list_postgres_databases",
-            description="List all PostgreSQL databases in a cluster managed by CloudNativePG Database CRDs. Shows database name, owner, and reclaim policy.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "cluster_name": {
-                        "type": "string",
-                        "description": "Name of the PostgreSQL cluster."
-                    },
-                    "namespace": {
-                        "type": "string",
-                        "description": "Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
-                    }
-                },
-                "required": ["cluster_name"]
-            }
-        ),
-        Tool(
-            name="create_postgres_database",
-            description="Create a new PostgreSQL database in a cluster using CloudNativePG Database CRD. The database is created declaratively and managed by the operator.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "cluster_name": {
-                        "type": "string",
-                        "description": "Name of the PostgreSQL cluster where the database will be created."
-                    },
-                    "database_name": {
-                        "type": "string",
-                        "description": "Name of the database to create. Must start with a letter or underscore, followed by letters, numbers, or underscores.",
-                        "pattern": "^[a-z_][a-z0-9_]*$"
-                    },
-                    "owner": {
-                        "type": "string",
-                        "description": "PostgreSQL role that will own the database. The role must already exist in the cluster."
-                    },
-                    "reclaim_policy": {
-                        "type": "string",
-                        "enum": ["retain", "delete"],
-                        "description": "What to do with the database when the CRD is deleted. 'retain' keeps the database, 'delete' removes it.",
-                        "default": "retain"
-                    },
-                    "namespace": {
-                        "type": "string",
-                        "description": "Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
-                    }
-                },
-                "required": ["cluster_name", "database_name", "owner"]
-            }
-        ),
-        Tool(
-            name="delete_postgres_database",
-            description="Delete a PostgreSQL database from a cluster by removing the Database CRD. The actual database deletion depends on the reclaim policy set when the database was created.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "cluster_name": {
-                        "type": "string",
-                        "description": "Name of the PostgreSQL cluster."
-                    },
-                    "database_name": {
-                        "type": "string",
-                        "description": "Name of the database to delete."
-                    },
-                    "namespace": {
-                        "type": "string",
-                        "description": "Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
-                    }
-                },
-                "required": ["cluster_name", "database_name"]
-            }
-        )
-    ]
-
-
-@mcp.call_tool()
-async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-    """Handle tool execution requests."""
-    try:
-        if name == "list_postgres_clusters":
-            result = await list_postgres_clusters(
-                namespace=arguments.get("namespace"),
-                detail_level=arguments.get("detail_level", "concise")
-            )
-        elif name == "get_cluster_status":
-            result = await get_cluster_status(
-                name=arguments["name"],
-                namespace=arguments.get("namespace"),
-                detail_level=arguments.get("detail_level", "concise")
-            )
-        elif name == "create_postgres_cluster":
-            result = await create_postgres_cluster(
-                name=arguments["name"],
-                instances=arguments.get("instances", 3),
-                storage_size=arguments.get("storage_size", "10Gi"),
-                postgres_version=arguments.get("postgres_version", "16"),
-                storage_class=arguments.get("storage_class"),
-                wait=arguments.get("wait", False),
-                timeout=arguments.get("timeout"),  # None triggers dynamic calculation
-                namespace=arguments.get("namespace"),
-                dry_run=arguments.get("dry_run", False)
-            )
-        elif name == "scale_postgres_cluster":
-            result = await scale_postgres_cluster(
-                name=arguments["name"],
-                instances=arguments["instances"],
-                namespace=arguments.get("namespace")
-            )
-        elif name == "delete_postgres_cluster":
-            result = await delete_postgres_cluster(
-                name=arguments["name"],
-                confirm_deletion=arguments.get("confirm_deletion", False),
-                namespace=arguments.get("namespace")
-            )
-        elif name == "list_postgres_roles":
-            result = await list_postgres_roles(
-                cluster_name=arguments["cluster_name"],
-                namespace=arguments.get("namespace")
-            )
-        elif name == "create_postgres_role":
-            result = await create_postgres_role(
-                cluster_name=arguments["cluster_name"],
-                role_name=arguments["role_name"],
-                login=arguments.get("login", True),
-                superuser=arguments.get("superuser", False),
-                inherit=arguments.get("inherit", True),
-                createdb=arguments.get("createdb", False),
-                createrole=arguments.get("createrole", False),
-                replication=arguments.get("replication", False),
-                namespace=arguments.get("namespace")
-            )
-        elif name == "update_postgres_role":
-            result = await update_postgres_role(
-                cluster_name=arguments["cluster_name"],
-                role_name=arguments["role_name"],
-                login=arguments.get("login"),
-                superuser=arguments.get("superuser"),
-                inherit=arguments.get("inherit"),
-                createdb=arguments.get("createdb"),
-                createrole=arguments.get("createrole"),
-                replication=arguments.get("replication"),
-                password=arguments.get("password"),
-                namespace=arguments.get("namespace")
-            )
-        elif name == "delete_postgres_role":
-            result = await delete_postgres_role(
-                cluster_name=arguments["cluster_name"],
-                role_name=arguments["role_name"],
-                namespace=arguments.get("namespace")
-            )
-        elif name == "list_postgres_databases":
-            result = await list_postgres_databases(
-                cluster_name=arguments["cluster_name"],
-                namespace=arguments.get("namespace")
-            )
-        elif name == "create_postgres_database":
-            result = await create_postgres_database(
-                cluster_name=arguments["cluster_name"],
-                database_name=arguments["database_name"],
-                owner=arguments["owner"],
-                reclaim_policy=arguments.get("reclaim_policy", "retain"),
-                namespace=arguments.get("namespace")
-            )
-        elif name == "delete_postgres_database":
-            result = await delete_postgres_database(
-                cluster_name=arguments["cluster_name"],
-                database_name=arguments["database_name"],
-                namespace=arguments.get("namespace")
-            )
-        else:
-            raise ValueError(f"Unknown tool: {name}")
-
-        return [TextContent(type="text", text=result)]
-
-    except Exception as e:
-        error_msg = format_error_message(e, f"executing tool '{name}'")
-        return [TextContent(type="text", text=error_msg)]
-
-
-@mcp.list_resources()
-async def list_resources() -> list[Resource]:
-    """List available resources (none for this server)."""
-    return []
-
-
-@mcp.read_resource()
-async def read_resource(uri: str) -> str:
-    """Read a resource by URI (not implemented)."""
-    raise ValueError(f"Resource not found: {uri}")
-
-
-@mcp.list_prompts()
-async def list_prompts() -> list[Prompt]:
-    """List available prompts (none for this server)."""
-    return []
-
-
-@mcp.get_prompt()
-async def get_prompt(name: str, arguments: dict | None = None) -> str:
-    """Get a prompt by name (not implemented)."""
-    raise ValueError(f"Prompt not found: {name}")
+# With FastMCP, we don't need to manually define:
+# - @mcp.list_tools() - schemas are auto-generated from function signatures
+# - @mcp.call_tool() - routing is automatic based on function names
+# - Resource/Prompt handlers - not needed unless we explicitly use them
+#
+# All @mcp.tool() decorated functions below are automatically registered!
 
 
 # ============================================================================
@@ -2099,64 +1760,51 @@ async def run_stdio_transport():
 
     This is the default mode for local usage with Claude Desktop.
     The server communicates via stdin/stdout and is managed as a child process.
-    """
-    from mcp.server.stdio import stdio_server
 
+    FastMCP simplifies this - use run_stdio_async() for existing event loops!
+    """
     print("Starting CloudNativePG MCP server with stdio transport...", file=sys.stderr)
     print(f"Python version: {sys.version}", file=sys.stderr)
-    print(f"MCP server initialized with name: cloudnative-pg", file=sys.stderr)
+    print(f"FastMCP server initialized with name: cloudnative-pg", file=sys.stderr)
 
-    async with stdio_server() as (read_stream, write_stream):
-        print("STDIO transport established, running server...", file=sys.stderr)
-        await mcp.run(
-            read_stream,
-            write_stream,
-            mcp.create_initialization_options()
-        )
-        print("Server run completed", file=sys.stderr)
+    # Use run_stdio_async() since we're already in an asyncio event loop
+    await mcp.run_stdio_async()
 
 
 async def run_http_transport(host: str = "0.0.0.0", port: int = 3000):
     """
     Run the MCP server using HTTP/SSE transport.
-    
+
     This mode allows multiple clients to connect remotely and is suitable
     for team environments and production deployments.
-    
-    TODO: Implement HTTP transport when needed
-    - Install: pip install mcp[sse] starlette uvicorn
-    - Add SSE endpoints for event streaming
-    - Add POST endpoint for client messages
-    - Implement authentication/authorization
-    - Add TLS support for production
+
+    FastMCP makes HTTP/SSE transport simple with run_sse_async()!
     """
-    raise NotImplementedError(
-        "HTTP transport is not yet implemented. "
-        "For now, use stdio transport (default mode).\n"
-        "To add HTTP support, install: pip install mcp[sse] starlette uvicorn"
-    )
-    
-    # Future implementation structure:
-    # from mcp.server.sse import SseServerTransport
-    # from starlette.applications import Starlette
-    # from starlette.routing import Route
-    # import uvicorn
+    print(f"Starting CloudNativePG MCP server with HTTP/SSE transport on {host}:{port}...", file=sys.stderr)
+    print(f"FastMCP server initialized with name: cloudnative-pg", file=sys.stderr)
+
+    # FastMCP handles HTTP/SSE transport automatically
+    # This will create a server that can handle multiple concurrent clients
+    await mcp.run_sse_async(host=host, port=port)
+
+    # FastMCP automatically provides:
+    # - GET /sse - Server-Sent Events endpoint for bidirectional communication
+    # - POST /message - Endpoint for client messages
+    # - Built-in authentication support (via mcp.auth)
+    # - CORS handling
+    # - Error handling
     #
-    # sse_transport = SseServerTransport("/messages")
+    # To add authentication:
+    # @mcp.auth
+    # async def authenticate(request):
+    #     # Verify API key, JWT, etc.
+    #     return True  # or raise an exception
     #
-    # async def handle_sse(request):
-    #     async with sse_transport.connect_sse(...) as streams:
-    #         await mcp.run(streams[0], streams[1], ...)
-    #
-    # async def handle_messages(request):
-    #     await sse_transport.handle_post_message(request)
-    #
-    # app = Starlette(routes=[
-    #     Route("/sse", endpoint=handle_sse),
-    #     Route("/messages", endpoint=handle_messages, methods=["POST"]),
-    # ])
-    #
-    # uvicorn.run(app, host=host, port=port)
+    # For production:
+    # - Run behind a reverse proxy (nginx, traefik) for TLS
+    # - Set FASTMCP_AUTH_SECRET environment variable
+    # - Consider rate limiting
+    # - Enable audit logging
 
 
 # ============================================================================
