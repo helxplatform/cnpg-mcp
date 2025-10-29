@@ -23,25 +23,78 @@ This MCP server enables LLMs to interact with PostgreSQL clusters managed by the
    kubectl apply -f https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.22/releases/cnpg-1.22.0.yaml
    ```
 
-2. **Python 3.9+** installed
+2. **Python 3.11+** installed
 
-3. **kubectl** configured to access your cluster
+3. **Kubernetes config file (kubeconfig)** with cluster access at `~/.kube/config` or set via `KUBECONFIG` environment variable
+   - The server uses the Kubernetes Python client library (no kubectl CLI required)
 
 4. **Appropriate RBAC permissions** for the service account (see RBAC Setup below)
 
 ## Installation
 
-1. Clone or download this repository
+### Option 1: Install via Smithery.ai (Recommended)
+
+The easiest way to install and configure this MCP server is through [Smithery.ai](https://smithery.ai):
+
+```bash
+npx @smithery/cli install cnpg-mcp-server --client claude
+```
+
+This automatically:
+- Installs the required Python dependencies
+- Configures the MCP server in your Claude Desktop config
+- Sets up the appropriate environment variables
+
+### Option 2: Manual Installation
+
+1. Clone this repository:
+   ```bash
+   git clone https://github.com/helxplatform/cnpg-mcp.git
+   cd cnpg-mcp
+   ```
 
 2. Install Python dependencies:
    ```bash
    pip install -r requirements.txt
    ```
 
-3. Verify Kubernetes connectivity:
+3. Verify Kubernetes connectivity (optional):
+   ```bash
+   python -c "from kubernetes import config; config.load_kube_config(); print('✅ Kubernetes config loaded successfully')"
+   ```
+
+   Or if you have kubectl installed:
    ```bash
    kubectl get nodes
    ```
+
+4. Configure for Claude Desktop (optional):
+   Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
+   ```json
+   {
+     "mcpServers": {
+       "cnpg": {
+         "command": "python",
+         "args": ["/absolute/path/to/cnpg_mcp_server.py"],
+         "env": {
+           "KUBECONFIG": "/path/to/.kube/config"
+         }
+       }
+     }
+   }
+   ```
+
+### Option 3: Install as Python Package
+
+Install directly from source:
+```bash
+pip install git+https://github.com/helxplatform/cnpg-mcp.git
+```
+
+Then run:
+```bash
+cnpg-mcp-server
+```
 
 ## RBAC Setup
 
@@ -290,6 +343,10 @@ Scale the app-db cluster in production to 5 instances
 
 Delete a PostgreSQL cluster and its associated resources.
 
+**Automatically cleans up:**
+- The cluster resource itself
+- All associated role password secrets (using label selector `cnpg.io/cluster={name}`)
+
 **Parameters:**
 - `name` (required): Name of the cluster to delete
 - `confirm_deletion` (default: False): Must be explicitly set to true to confirm deletion
@@ -300,7 +357,7 @@ Delete a PostgreSQL cluster and its associated resources.
 Delete the old-test-cluster with confirmation
 ```
 
-**Warning:** This is a DESTRUCTIVE operation that permanently removes the cluster and all its data.
+**Warning:** This is a DESTRUCTIVE operation that permanently removes the cluster and all its data. The tool will report how many secrets were cleaned up.
 
 ### Role/User Management
 
@@ -593,10 +650,14 @@ This is expected behavior - the server waits for MCP requests over stdio. Run in
 1. **RBAC**: Apply principle of least privilege - only grant necessary permissions
    - Use `cnpg-cloudnative-pg-view` for read-only access
    - Use `cnpg-cloudnative-pg-edit` for cluster management
-   - Grant additional permissions for secrets if using role management
+   - Grant additional permissions for secrets if using role management:
+     - `list` secrets with label selector (for cleanup during cluster deletion)
+     - `create` and `delete` secrets (for role management)
 2. **Secrets**: Never log or expose database credentials
    - Role passwords are automatically generated and stored in Kubernetes secrets
    - Secrets are labeled with cluster and role information for easy management
+   - Secrets are named `cnpg-{cluster}-user-{role}` to avoid conflicts
+   - **Automatic cleanup**: Secrets are automatically deleted when their cluster is deleted
 3. **Input validation**: All inputs are validated with Pydantic models
 4. **Namespace isolation**: Consider restricting to specific namespaces
 5. **Audit logging**: Enable Kubernetes audit logs for compliance
