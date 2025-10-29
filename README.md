@@ -290,6 +290,10 @@ Scale the app-db cluster in production to 5 instances
 
 Delete a PostgreSQL cluster and its associated resources.
 
+**Automatically cleans up:**
+- The cluster resource itself
+- All associated role password secrets (using label selector `cnpg.io/cluster={name}`)
+
 **Parameters:**
 - `name` (required): Name of the cluster to delete
 - `confirm_deletion` (default: False): Must be explicitly set to true to confirm deletion
@@ -300,7 +304,7 @@ Delete a PostgreSQL cluster and its associated resources.
 Delete the old-test-cluster with confirmation
 ```
 
-**Warning:** This is a DESTRUCTIVE operation that permanently removes the cluster and all its data.
+**Warning:** This is a DESTRUCTIVE operation that permanently removes the cluster and all its data. The tool will report how many secrets were cleaned up.
 
 ### Role/User Management
 
@@ -593,10 +597,14 @@ This is expected behavior - the server waits for MCP requests over stdio. Run in
 1. **RBAC**: Apply principle of least privilege - only grant necessary permissions
    - Use `cnpg-cloudnative-pg-view` for read-only access
    - Use `cnpg-cloudnative-pg-edit` for cluster management
-   - Grant additional permissions for secrets if using role management
+   - Grant additional permissions for secrets if using role management:
+     - `list` secrets with label selector (for cleanup during cluster deletion)
+     - `create` and `delete` secrets (for role management)
 2. **Secrets**: Never log or expose database credentials
    - Role passwords are automatically generated and stored in Kubernetes secrets
    - Secrets are labeled with cluster and role information for easy management
+   - Secrets are named `cnpg-{cluster}-user-{role}` to avoid conflicts
+   - **Automatic cleanup**: Secrets are automatically deleted when their cluster is deleted
 3. **Input validation**: All inputs are validated with Pydantic models
 4. **Namespace isolation**: Consider restricting to specific namespaces
 5. **Audit logging**: Enable Kubernetes audit logs for compliance

@@ -964,6 +964,10 @@ async def delete_postgres_cluster(
     operation that cannot be undone. All data will be lost unless you have backups.
     Use with caution, especially in production environments.
 
+    Automatically cleans up:
+    - The cluster resource itself
+    - All associated role password secrets (labeled with cnpg.io/cluster={name})
+
     Args:
         name: Name of the cluster to delete.
         confirm_deletion: Must be explicitly set to True to confirm deletion.
@@ -972,8 +976,8 @@ async def delete_postgres_cluster(
                   uses the current namespace from your Kubernetes context.
 
     Returns:
-        Success message if deletion is initiated, warning message if not confirmed,
-        or error details if it fails.
+        Success message if deletion is initiated (including count of secrets cleaned up),
+        warning message if not confirmed, or error details if it fails.
 
     Examples:
         - Request deletion (shows warning): delete_postgres_cluster(name="old-test-cluster")
@@ -1029,7 +1033,7 @@ To cancel, simply do not call the tool again.
         await get_cnpg_cluster(namespace, name)
 
         # Delete the cluster
-        custom_api, _ = get_kubernetes_clients()
+        custom_api, core_api = get_kubernetes_clients()
         await asyncio.to_thread(
             custom_api.delete_namespaced_custom_object,
             group=CNPG_GROUP,
@@ -1039,7 +1043,38 @@ To cancel, simply do not call the tool again.
             name=name
         )
 
-        return f"""Successfully initiated deletion of cluster '{namespace}/{name}'.
+        # Clean up associated role secrets
+        secrets_deleted = 0
+        try:
+            # Find all secrets for this cluster using label selector
+            label_selector = f"cnpg.io/cluster={name}"
+            secrets = await asyncio.to_thread(
+                core_api.list_namespaced_secret,
+                namespace=namespace,
+                label_selector=label_selector
+            )
+
+            # Delete each secret
+            for secret in secrets.items:
+                try:
+                    await asyncio.to_thread(
+                        core_api.delete_namespaced_secret,
+                        name=secret.metadata.name,
+                        namespace=namespace
+                    )
+                    secrets_deleted += 1
+                except Exception:
+                    # Continue even if a secret fails to delete
+                    pass
+        except Exception:
+            # If secret cleanup fails, don't fail the whole operation
+            pass
+
+        secrets_msg = ""
+        if secrets_deleted > 0:
+            secrets_msg = f"\n\n🔑 Cleaned up {secrets_deleted} associated role secret(s)."
+
+        return f"""Successfully initiated deletion of cluster '{namespace}/{name}'.{secrets_msg}
 
 ⚠️  WARNING: This is a destructive operation. All data in this cluster will be permanently lost.
 
@@ -1194,7 +1229,7 @@ async def create_postgres_role(
         password = generate_password(16)
 
         # Create Kubernetes secret to store the password
-        secret_name = f"{cluster_name}-user-{role_name}"
+        secret_name = f"cnpg-{cluster_name}-user-{role_name}"
         _, core_api = get_kubernetes_clients()
 
         secret_data = {
@@ -1358,7 +1393,7 @@ async def update_postgres_role(
 
         if password is not None:
             # Update the secret
-            secret_name = f"{cluster_name}-user-{role_name}"
+            secret_name = f"cnpg-{cluster_name}-user-{role_name}"
             _, core_api = get_kubernetes_clients()
 
             try:
@@ -1455,7 +1490,7 @@ async def delete_postgres_role(
         )
 
         # Delete the associated secret
-        secret_name = f"{cluster_name}-user-{role_name}"
+        secret_name = f"cnpg-{cluster_name}-user-{role_name}"
         _, core_api = get_kubernetes_clients()
 
         try:
