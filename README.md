@@ -10,6 +10,9 @@ This MCP server enables LLMs to interact with PostgreSQL clusters managed by the
 - 🔍 Getting detailed cluster status and health information
 - 🚀 Creating new PostgreSQL clusters with best practices
 - 📈 Scaling clusters up or down
+- 🗑️ Deleting PostgreSQL clusters with safety confirmations
+- 👥 Managing PostgreSQL roles/users (list, create, update, delete)
+- 🗄️ Managing PostgreSQL databases (list, create, delete)
 - 🔄 Managing backups and restores (TODO)
 - 📊 Monitoring cluster health and logs (TODO)
 
@@ -125,6 +128,12 @@ You can also set the `KUBECONFIG` environment variable:
 export KUBECONFIG=/path/to/your/kubeconfig
 ```
 
+**Namespace Handling:**
+- Most tools accept an optional `namespace` parameter
+- If not specified, the server automatically uses the current namespace from your Kubernetes context
+- This makes it easier to work with a default namespace without specifying it every time
+- You can check your current namespace with: `kubectl config view --minify -o jsonpath='{..namespace}'`
+
 ## Running the Server
 
 ### Command-Line Options
@@ -190,12 +199,14 @@ Deploy as a Kubernetes service that can be accessed by your LLM application.
 
 ## Available Tools
 
-### 1. list_postgres_clusters
+### Cluster Management
+
+#### 1. list_postgres_clusters
 
 List all PostgreSQL clusters in the Kubernetes cluster.
 
 **Parameters:**
-- `namespace` (optional): Filter by namespace, or omit for all namespaces
+- `namespace` (optional): Filter by namespace. If not provided, uses the current namespace from your Kubernetes context
 - `detail_level`: "concise" (default) or "detailed"
 
 **Example:**
@@ -203,13 +214,13 @@ List all PostgreSQL clusters in the Kubernetes cluster.
 List all PostgreSQL clusters in production namespace
 ```
 
-### 2. get_cluster_status
+#### 2. get_cluster_status
 
 Get detailed status for a specific cluster.
 
 **Parameters:**
-- `namespace` (required): Namespace of the cluster
 - `name` (required): Name of the cluster
+- `namespace` (optional): Namespace of the cluster. If not specified, uses the current namespace from your Kubernetes context
 - `detail_level`: "concise" (default) or "detailed"
 
 **Example:**
@@ -217,36 +228,167 @@ Get detailed status for a specific cluster.
 Get detailed status for the main-db cluster in production namespace
 ```
 
-### 3. create_postgres_cluster
+#### 3. create_postgres_cluster
 
 Create a new PostgreSQL cluster with high availability.
 
 **Parameters:**
-- `namespace` (required): Target namespace
 - `name` (required): Cluster name
 - `instances` (default: 3): Number of PostgreSQL instances
 - `storage_size` (default: "10Gi"): Storage per instance
 - `postgres_version` (default: "16"): PostgreSQL version
 - `storage_class` (optional): Kubernetes storage class
+- `wait` (default: False): Wait for the cluster to become operational before returning
+- `timeout` (optional): Maximum time in seconds to wait (30-600 seconds). Defaults to 60 seconds per instance
+- `namespace` (optional): Target namespace. If not specified, uses the current namespace from your Kubernetes context
+- `dry_run` (default: False): Preview the cluster configuration without creating it
 
 **Example:**
 ```
 Create a new PostgreSQL cluster named 'app-db' in the production namespace with 5 instances and 100Gi storage
 ```
 
-### 4. scale_postgres_cluster
+#### 4. scale_postgres_cluster
 
 Scale a cluster by changing the number of instances.
 
 **Parameters:**
-- `namespace` (required): Namespace of the cluster
 - `name` (required): Cluster name
 - `instances` (required): New number of instances (1-10)
+- `namespace` (optional): Namespace of the cluster. If not specified, uses the current namespace from your Kubernetes context
 
 **Example:**
 ```
 Scale the app-db cluster in production to 5 instances
 ```
+
+#### 5. delete_postgres_cluster
+
+Delete a PostgreSQL cluster and its associated resources.
+
+**Parameters:**
+- `name` (required): Name of the cluster to delete
+- `confirm_deletion` (default: False): Must be explicitly set to true to confirm deletion
+- `namespace` (optional): Namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context
+
+**Example:**
+```
+Delete the old-test-cluster with confirmation
+```
+
+**Warning:** This is a DESTRUCTIVE operation that permanently removes the cluster and all its data.
+
+### Role/User Management
+
+#### 6. list_postgres_roles
+
+List all PostgreSQL roles/users managed in a cluster.
+
+**Parameters:**
+- `cluster_name` (required): Name of the PostgreSQL cluster
+- `namespace` (optional): Namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context
+
+**Example:**
+```
+List all roles in the main-db cluster
+```
+
+#### 7. create_postgres_role
+
+Create a new PostgreSQL role/user in a cluster. Automatically generates a secure password and stores it in a Kubernetes secret.
+
+**Parameters:**
+- `cluster_name` (required): Name of the PostgreSQL cluster
+- `role_name` (required): Name of the role to create
+- `login` (default: true): Allow role to log in
+- `superuser` (default: false): Grant superuser privileges
+- `inherit` (default: true): Inherit privileges from parent roles
+- `createdb` (default: false): Allow creating databases
+- `createrole` (default: false): Allow creating roles
+- `replication` (default: false): Allow streaming replication
+- `namespace` (optional): Namespace where the cluster exists
+
+**Example:**
+```
+Create a new role 'app_user' in the main-db cluster with login and createdb privileges
+```
+
+#### 8. update_postgres_role
+
+Update attributes of an existing PostgreSQL role/user.
+
+**Parameters:**
+- `cluster_name` (required): Name of the PostgreSQL cluster
+- `role_name` (required): Name of the role to update
+- `login`, `superuser`, `inherit`, `createdb`, `createrole`, `replication` (all optional): Attributes to update
+- `password` (optional): New password for the role
+- `namespace` (optional): Namespace where the cluster exists
+
+**Example:**
+```
+Grant createdb privilege to app_user in the main-db cluster
+```
+
+#### 9. delete_postgres_role
+
+Delete a PostgreSQL role/user from a cluster. Also deletes the associated Kubernetes secret.
+
+**Parameters:**
+- `cluster_name` (required): Name of the PostgreSQL cluster
+- `role_name` (required): Name of the role to delete
+- `namespace` (optional): Namespace where the cluster exists
+
+**Example:**
+```
+Delete the old_user role from the main-db cluster
+```
+
+### Database Management
+
+#### 10. list_postgres_databases
+
+List all PostgreSQL databases managed by Database CRDs for a cluster.
+
+**Parameters:**
+- `cluster_name` (required): Name of the PostgreSQL cluster
+- `namespace` (optional): Namespace where the cluster exists
+
+**Example:**
+```
+List all databases in the main-db cluster
+```
+
+#### 11. create_postgres_database
+
+Create a new PostgreSQL database using CloudNativePG's Database CRD.
+
+**Parameters:**
+- `cluster_name` (required): Name of the PostgreSQL cluster
+- `database_name` (required): Name of the database to create
+- `owner` (required): Name of the role that will own the database
+- `reclaim_policy` (default: "retain"): Policy for database deletion ("retain" or "delete")
+- `namespace` (optional): Namespace where the cluster exists
+
+**Example:**
+```
+Create a new database 'app_data' owned by 'app_user' in the main-db cluster
+```
+
+#### 12. delete_postgres_database
+
+Delete a PostgreSQL database by removing its Database CRD.
+
+**Parameters:**
+- `cluster_name` (required): Name of the PostgreSQL cluster
+- `database_name` (required): Name of the database to delete
+- `namespace` (optional): Namespace where the cluster exists
+
+**Example:**
+```
+Delete the old_data database from the main-db cluster
+```
+
+**Note:** Whether the database is actually dropped from PostgreSQL depends on the `databaseReclaimPolicy` set when the database was created.
 
 ## Architecture
 
@@ -296,8 +438,13 @@ The server is designed with **transport-agnostic core logic**, making it easy to
 ### Components
 
 - **Kubernetes Client**: Uses `kubernetes` Python client for API access
-- **CloudNativePG CRDs**: Interacts with Custom Resource Definitions
+- **CloudNativePG CRDs**: Interacts with Custom Resource Definitions:
+  - `Cluster`: Primary resource for PostgreSQL cluster management
+  - `Database`: Declarative database creation and management (CNPG v1.23+)
+- **Declarative Role Management**: Manages PostgreSQL roles through the Cluster CRD's `.spec.managed.roles` field
+- **Secret Management**: Automatically creates and manages Kubernetes secrets for role passwords
 - **Async operations**: All I/O is async for better performance
+- **Lazy initialization**: Kubernetes clients are initialized on first use, allowing graceful startup
 - **Error handling**: Comprehensive error formatting with suggestions
 
 ## Development
@@ -362,16 +509,26 @@ python cnpg_mcp_server.py
 # In another terminal, test with MCP client or Claude Desktop
 ```
 
+### Implemented Features
+
+- [x] Delete cluster tool with safety confirmations
+- [x] PostgreSQL role/user management (list, create, update, delete)
+- [x] PostgreSQL database management (list, create, delete)
+- [x] Dry-run mode for cluster creation
+- [x] Wait for cluster readiness with configurable timeout
+- [x] Automatic namespace inference from Kubernetes context
+- [x] Lazy Kubernetes client initialization
+
 ### TODO: Upcoming Features
 
-- [ ] Delete cluster tool
 - [ ] Backup management (list, create, restore)
 - [ ] Log retrieval from pods
 - [ ] SQL query execution (with safety guardrails)
-- [ ] Database and user management
-- [ ] Connection information retrieval
+- [ ] Connection information retrieval (automatic secret decoding)
 - [ ] Monitoring and metrics integration
 - [ ] Certificate and secret management
+- [ ] Cluster configuration updates
+- [ ] Pooler management
 
 ## Troubleshooting
 
@@ -404,10 +561,18 @@ This is expected behavior - the server waits for MCP requests over stdio. Run in
 ## Security Considerations
 
 1. **RBAC**: Apply principle of least privilege - only grant necessary permissions
+   - Use `cnpg-cloudnative-pg-view` for read-only access
+   - Use `cnpg-cloudnative-pg-edit` for cluster management
+   - Grant additional permissions for secrets if using role management
 2. **Secrets**: Never log or expose database credentials
+   - Role passwords are automatically generated and stored in Kubernetes secrets
+   - Secrets are labeled with cluster and role information for easy management
 3. **Input validation**: All inputs are validated with Pydantic models
 4. **Namespace isolation**: Consider restricting to specific namespaces
 5. **Audit logging**: Enable Kubernetes audit logs for compliance
+6. **Destructive operations**: Cluster and database deletion require explicit confirmation
+7. **Role privileges**: Be cautious when granting superuser or replication privileges
+8. **Database reclaim policy**: Choose "retain" for production databases to prevent accidental data loss
 
 ## Resources
 
