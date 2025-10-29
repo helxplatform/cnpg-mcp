@@ -23,25 +23,78 @@ This MCP server enables LLMs to interact with PostgreSQL clusters managed by the
    kubectl apply -f https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.22/releases/cnpg-1.22.0.yaml
    ```
 
-2. **Python 3.9+** installed
+2. **Python 3.11+** installed
 
-3. **kubectl** configured to access your cluster
+3. **Kubernetes config file (kubeconfig)** with cluster access at `~/.kube/config` or set via `KUBECONFIG` environment variable
+   - The server uses the Kubernetes Python client library (no kubectl CLI required)
 
 4. **Appropriate RBAC permissions** for the service account (see RBAC Setup below)
 
 ## Installation
 
-1. Clone or download this repository
+### Option 1: Install via Smithery.ai (Recommended)
+
+The easiest way to install and configure this MCP server is through [Smithery.ai](https://smithery.ai):
+
+```bash
+npx @smithery/cli install cnpg-mcp-server --client claude
+```
+
+This automatically:
+- Installs the required Python dependencies
+- Configures the MCP server in your Claude Desktop config
+- Sets up the appropriate environment variables
+
+### Option 2: Manual Installation
+
+1. Clone this repository:
+   ```bash
+   git clone https://github.com/helxplatform/cnpg-mcp.git
+   cd cnpg-mcp
+   ```
 
 2. Install Python dependencies:
    ```bash
    pip install -r requirements.txt
    ```
 
-3. Verify Kubernetes connectivity:
+3. Verify Kubernetes connectivity (optional):
+   ```bash
+   python -c "from kubernetes import config; config.load_kube_config(); print('✅ Kubernetes config loaded successfully')"
+   ```
+
+   Or if you have kubectl installed:
    ```bash
    kubectl get nodes
    ```
+
+4. Configure for Claude Desktop (optional):
+   Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
+   ```json
+   {
+     "mcpServers": {
+       "cnpg": {
+         "command": "python",
+         "args": ["/absolute/path/to/cnpg_mcp_server.py"],
+         "env": {
+           "KUBECONFIG": "/path/to/.kube/config"
+         }
+       }
+     }
+   }
+   ```
+
+### Option 3: Install as Python Package
+
+Install directly from source:
+```bash
+pip install git+https://github.com/helxplatform/cnpg-mcp.git
+```
+
+Then run:
+```bash
+cnpg-mcp-server
+```
 
 ## RBAC Setup
 
