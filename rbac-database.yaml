@@ -2,27 +2,39 @@
 # Role for Database CRD permissions
 # The CloudNativePG helm-installed ClusterRoles may not include permissions
 # for the Database CRD, so we create a namespace-scoped Role for it
+#
+# CUSTOMIZE: Replace 'default' with your target namespace
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: cnpg-database-admin
-  namespace: jeffw
+  namespace: default  # Change this to your namespace
 rules:
   - apiGroups: ["postgresql.cnpg.io"]
     resources: ["databases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
 ---
-# RoleBinding for the user jeffw@renci.org
+# RoleBinding for Database CRD access
+# CUSTOMIZE: Replace the subject with your user, service account, or group
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: jeffw-database-admin
-  namespace: jeffw
+  name: cnpg-database-admin-binding
+  namespace: default  # Change this to your namespace
 subjects:
+  # Option 1: For a specific user (replace with your username)
   - kind: User
-    name: jeffw@renci.org
+    name: your-username@example.com  # Change this to your user
     apiGroup: rbac.authorization.k8s.io
+  # Option 2: For a service account (uncomment and customize)
+  # - kind: ServiceAccount
+  #   name: cnpg-mcp-server
+  #   namespace: default
+  # Option 3: For a group (uncomment and customize)
+  # - kind: Group
+  #   name: cnpg-admins
+  #   apiGroup: rbac.authorization.k8s.io
 roleRef:
   kind: Role
   name: cnpg-database-admin

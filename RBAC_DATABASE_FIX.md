@@ -1,7 +1,7 @@
 # Database RBAC Permissions Fix
 
 ## Problem
-User `jeffw@renci.org` has permissions for `clusters.postgresql.cnpg.io` but not for `databases.postgresql.cnpg.io` in the `jeffw` namespace.
+User has permissions for `clusters.postgresql.cnpg.io` but not for `databases.postgresql.cnpg.io` in their namespace.
 
 ## Root Cause
 The CloudNativePG helm-installed ClusterRoles may not include permissions for the Database CRD (a newer feature), or the user's existing role bindings don't cover database resources.
@@ -12,13 +12,16 @@ A **cluster administrator** needs to apply RBAC permissions. Choose one of the o
 
 ### Option 1: Namespace-scoped permissions for specific user (Quick Fix)
 
-Apply the provided `rbac-database.yaml`:
+1. Edit `rbac-database.yaml` and customize:
+   - Replace `default` namespace with your target namespace
+   - Replace `your-username@example.com` with your actual user/service account
 
-```bash
-kubectl apply -f rbac-database.yaml
-```
+2. Apply the file:
+   ```bash
+   kubectl apply -f rbac-database.yaml
+   ```
 
-This grants `jeffw@renci.org` full permissions for Database CRDs in the `jeffw` namespace.
+This grants the specified user full permissions for Database CRDs in the specified namespace.
 
 ### Option 2: Check/Update CloudNativePG ClusterRoles (Cluster-wide Fix)
 
@@ -47,10 +50,10 @@ This grants `jeffw@renci.org` full permissions for Database CRDs in the `jeffw` 
    apiVersion: rbac.authorization.k8s.io/v1
    kind: ClusterRoleBinding
    metadata:
-     name: jeffw-database-admin
+     name: cnpg-database-admin-binding
    subjects:
      - kind: User
-       name: jeffw@renci.org
+       name: your-username@example.com  # Change to your user
        apiGroup: rbac.authorization.k8s.io
    roleRef:
      kind: ClusterRole
@@ -93,7 +96,10 @@ After applying the fix, verify permissions:
 
 ```bash
 # Check if user can now list databases
-kubectl auth can-i list databases.postgresql.cnpg.io -n jeffw --as=jeffw@renci.org
+kubectl auth can-i list databases.postgresql.cnpg.io -n <your-namespace> --as=<your-username>@<example.com>
+
+# Example:
+# kubectl auth can-i list databases.postgresql.cnpg.io -n default --as=admin@company.com
 
 # Should return: yes
 ```
