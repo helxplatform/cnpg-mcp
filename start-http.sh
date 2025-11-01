@@ -12,7 +12,7 @@ NC='\033[0m' # No Color
 
 # Default values
 DEFAULT_HOST="${MCP_HOST:-0.0.0.0}"
-DEFAULT_PORT="${MCP_PORT:-3000}"
+DEFAULT_PORT="${MCP_PORT:-4204}"
 
 echo "============================================"
 echo "CloudNativePG MCP Server - HTTP Mode"

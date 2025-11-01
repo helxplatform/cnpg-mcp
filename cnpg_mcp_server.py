@@ -2075,7 +2075,7 @@ async def run_stdio_transport():
     await mcp.run_stdio_async()
 
 
-async def run_http_transport(host: str = "0.0.0.0", port: int = 3000):
+async def run_http_transport(host: str = "0.0.0.0", port: int = 4204):
     """
     Run the MCP server using HTTP transport (Streamable HTTP) with OIDC authentication.
 
@@ -2110,7 +2110,7 @@ async def run_http_transport(host: str = "0.0.0.0", port: int = 3000):
                 lambda app: OIDCAuthMiddleware(
                     app,
                     auth_provider,
-                    exclude_paths=["/health", "/.well-known/"]
+                    exclude_paths=["/healthz", "/readyz", "/.well-known/"]
                 )
             )
 
@@ -2142,14 +2142,21 @@ async def run_http_transport(host: str = "0.0.0.0", port: int = 3000):
         for route in metadata_routes:
             app.routes.append(route)
 
-    # Add health check endpoint (unauthenticated)
+    # Add health check endpoints (unauthenticated)
     from starlette.responses import JSONResponse
     from starlette.routing import Route
 
-    async def health_check(request):
-        return JSONResponse({"status": "healthy", "service": "cnpg-mcp-server"})
+    async def liveness_check(request):
+        """Liveness probe - checks if server is running."""
+        return JSONResponse({"status": "alive", "service": "cnpg-mcp-server"})
 
-    app.routes.insert(0, Route("/health", health_check, methods=["GET"]))
+    async def readiness_check(request):
+        """Readiness probe - checks if server is ready to accept requests."""
+        # TODO: Add checks for Kubernetes API connectivity if needed
+        return JSONResponse({"status": "ready", "service": "cnpg-mcp-server"})
+
+    app.routes.insert(0, Route("/healthz", liveness_check, methods=["GET"]))
+    app.routes.insert(0, Route("/readyz", readiness_check, methods=["GET"]))
 
     # Run with uvicorn
     import uvicorn
@@ -2207,8 +2214,8 @@ For more information, see README.md
     parser.add_argument(
         "--port",
         type=int,
-        default=3000,
-        help="Port to listen on (HTTP transport only, default: 3000)"
+        default=4204,
+        help="Port to listen on (HTTP transport only, default: 4204)"
     )
     
     return parser.parse_args()

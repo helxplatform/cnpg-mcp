@@ -2,10 +2,10 @@
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
 
-replicaCount: 1
+replicaCount: 2
 
 image:
-  repository: nginx
+  repository: your-registry.example.com/cnpg-mcp-server
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
   tag: ""
@@ -38,7 +38,7 @@ securityContext: {}
 
 service:
   type: ClusterIP
-  port: 80
+  port: 4204
 
 ingress:
   enabled: false
@@ -80,3 +80,29 @@ nodeSelector: {}
 tolerations: []
 
 affinity: {}
+
+# OIDC/OAuth2 Authentication Configuration
+# REQUIRED for production HTTP mode deployment
+oidc:
+  # REQUIRED: OIDC Issuer URL (base URL of your identity provider)
+  # Examples:
+  #   Auth0: https://your-tenant.auth0.com
+  #   Keycloak: https://keycloak.example.com/realms/your-realm
+  #   Okta: https://your-org.okta.com/oauth2/default
+  #   Azure AD: https://login.microsoftonline.com/{tenant-id}/v2.0
+  issuer: "https://auth.example.com"
+
+  # REQUIRED: Expected audience claim in JWT tokens
+  # This should match what your IdP issues in the 'aud' claim
+  audience: "mcp-api"
+
+  # OPTIONAL: Override JWKS URI (auto-discovered from issuer by default)
+  # Only set if your IdP doesn't support OIDC discovery
+  # jwksUri: ""
+
+  # OPTIONAL: DCR (Dynamic Client Registration) proxy URL
+  # Use if your IdP doesn't support RFC 7591 DCR natively
+  # dcrProxyUrl: ""
+
+  # OPTIONAL: Required OAuth2 scope (default: openid)
+  # scope: "openid"

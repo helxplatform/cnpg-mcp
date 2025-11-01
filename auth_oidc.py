@@ -317,11 +317,11 @@ class OIDCAuthMiddleware(BaseHTTPMiddleware):
         Args:
             app: Starlette application
             auth_provider: OIDCAuthProvider instance
-            exclude_paths: List of paths to exclude from authentication (e.g., ["/health"])
+            exclude_paths: List of paths to exclude from authentication (e.g., ["/healthz", "/readyz"])
         """
         super().__init__(app)
         self.auth_provider = auth_provider
-        self.exclude_paths = exclude_paths or ["/health", "/.well-known/"]
+        self.exclude_paths = exclude_paths or ["/healthz", "/readyz", "/.well-known/"]
 
     async def dispatch(self, request: Request, call_next):
         """Process request with authentication."""

@@ -13,7 +13,7 @@ NC='\033[0m' # No Color
 
 # Default values
 TRANSPORT="stdio"
-HTTP_URL="${MCP_HTTP_URL:-http://localhost:3000}"
+HTTP_URL="${MCP_HTTP_URL:-http://localhost:4204}"
 TOKEN=""
 TOKEN_FILE=""
 
@@ -26,7 +26,7 @@ Test the CloudNativePG MCP Server using MCP Inspector
 
 OPTIONS:
     -t, --transport <mode>    Transport mode: stdio (default) or http
-    -u, --url <url>          HTTP URL (default: http://localhost:3000)
+    -u, --url <url>          HTTP URL (default: http://localhost:4204)
     --token <token>          JWT bearer token for HTTP mode
     --token-file <file>      File containing JWT bearer token
     -h, --help               Show this help message
@@ -39,10 +39,10 @@ EXAMPLES:
     $0 --transport stdio
 
     # Test HTTP transport (no auth - development only)
-    $0 --transport http --url http://localhost:3000
+    $0 --transport http --url http://localhost:4204
 
     # Test HTTP transport with authentication
-    $0 --transport http --url http://localhost:3000 --token "eyJ..."
+    $0 --transport http --url http://localhost:4204 --token "eyJ..."
 
     # Test HTTP transport with token from file
     $0 --transport http --url https://mcp-api.example.com --token-file token.txt
@@ -52,7 +52,7 @@ EXAMPLES:
     $0 --transport http --token-file token.txt
 
 ENVIRONMENT VARIABLES:
-    MCP_HTTP_URL             Default HTTP URL (default: http://localhost:3000)
+    MCP_HTTP_URL             Default HTTP URL (default: http://localhost:4204)
 
 NOTES:
     - Requires npx and @modelcontextprotocol/inspector

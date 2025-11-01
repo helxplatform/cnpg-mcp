@@ -40,14 +40,14 @@ RUN useradd -m -u 1000 mcpuser && \
 USER mcpuser
 
 # Expose HTTP port
-EXPOSE 3000
+EXPOSE 4204
 
 # Health check endpoint
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:3000/health || exit 1
+    CMD curl -f http://localhost:4204/healthz || exit 1
 
 # Default to HTTP transport (for Kubernetes deployment)
 # The server will use in-cluster config automatically when running in a pod
 # OIDC configuration should be provided via environment variables:
 #   OIDC_ISSUER, OIDC_AUDIENCE, OIDC_JWKS_URI (optional), DCR_PROXY_URL (optional)
-CMD ["python", "cnpg_mcp_server.py", "--transport", "http", "--host", "0.0.0.0", "--port", "3000"]
+CMD ["python", "cnpg_mcp_server.py", "--transport", "http", "--host", "0.0.0.0", "--port", "4204"]

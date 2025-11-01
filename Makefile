@@ -84,7 +84,7 @@ test-image: make.env ## Test container image locally
 	@echo "Starting container in HTTP mode (insecure - no OIDC)..."
 	@echo "Press Ctrl+C to stop"
 	$(CONTAINER_TOOL) run --rm -it \
-		-p 3000:3000 \
+		-p 4204:4204 \
 		--name cnpg-mcp-test \
 		$(IMAGE_FULL)
 
@@ -162,7 +162,7 @@ dev-test-stdio: ## Test server with stdio transport
 dev-test-http: ## Test server with HTTP transport
 	@echo "Testing server with HTTP transport..."
 	@echo "Note: Requires server to be running (make dev-start-http)"
-	./test-inspector.sh --transport http --url http://localhost:3000
+	./test-inspector.sh --transport http --url http://localhost:4204
 
 #
 # Kubernetes development targets
@@ -185,10 +185,10 @@ k8s-describe: ## Describe deployed resources
 .PHONY: k8s-port-forward
 k8s-port-forward: ## Port forward to deployed service
 	@echo "Port forwarding to $(HELM_RELEASE) service..."
-	@echo "Access at: http://localhost:3000"
-	@echo "Health: http://localhost:3000/health"
-	@echo "MCP: http://localhost:3000/mcp"
-	kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-cnpg-mcp 3000:3000
+	@echo "Access at: http://localhost:4204"
+	@echo "Health: http://localhost:4204/healthz"
+	@echo "MCP: http://localhost:4204/mcp"
+	kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-cnpg-mcp 4204:4204
 
 .PHONY: k8s-shell
 k8s-shell: ## Open shell in deployed pod
