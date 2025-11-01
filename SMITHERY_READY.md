@@ -30,7 +30,7 @@ All required files are present and configured:
   - Standard MIT terms
 
 - [x] **requirements.txt** - Python dependencies
-  - fastmcp>=0.3.0
+  - fastmcp>=2.0.0
   - kubernetes>=28.0.0
   - pydantic>=2.0.0
   - pyyaml>=6.0.0

@@ -18,7 +18,7 @@ FastMCP is a simplified wrapper around the official MCP SDK that:
 ### 1. Dependencies (requirements.txt)
 ```diff
 - mcp>=1.0.0
-+ fastmcp>=0.3.0
++ fastmcp>=2.0.0
 ```
 
 ### 2. Imports (cnpg_mcp_server.py:24)

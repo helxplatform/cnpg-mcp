@@ -1,5 +1,5 @@
 # Core MCP Server dependencies
-fastmcp>=0.3.0
+fastmcp>=2.0.0
 
 # Kubernetes client
 kubernetes>=28.0.0
