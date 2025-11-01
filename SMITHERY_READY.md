@@ -6,11 +6,15 @@ This document confirms that cnpg-mcp-server is ready for publication on Smithery
 
 All required files are present and configured:
 
-- [x] **smithery.json** - Smithery.ai configuration
+- [x] **smithery.yaml** - Smithery.ai build configuration (required)
+  - Start command configuration
+  - Config schema for KUBECONFIG
+  - Command function for uvx
+
+- [x] **smithery.json** - Smithery.ai metadata (optional)
   - Server metadata
   - 12 tools documented
   - Categories and keywords defined
-  - Installation steps included
 
 - [x] **README.md** - Comprehensive documentation
   - Overview and features
@@ -26,10 +30,15 @@ All required files are present and configured:
   - Standard MIT terms
 
 - [x] **requirements.txt** - Python dependencies
-  - fastmcp>=0.3.0
+  - fastmcp>=2.0.0
   - kubernetes>=28.0.0
   - pydantic>=2.0.0
   - pyyaml>=6.0.0
+
+- [x] **pyproject.toml** - Modern Python package configuration
+  - Build system configuration
+  - Project metadata
+  - Dependencies and console scripts
 
 - [x] **cnpg_mcp_server.py** - Main server file
   - 1,921 lines

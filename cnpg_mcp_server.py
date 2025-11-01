@@ -351,6 +351,10 @@ class ScaleClusterInput(BaseModel):
         None,
         description="Kubernetes namespace of the cluster. If not specified, uses the current namespace from your Kubernetes context."
     )
+    dry_run: bool = Field(
+        False,
+        description="If True, shows what would be changed without applying it. Useful for previewing the scaling operation."
+    )
 
 
 class DeleteClusterInput(BaseModel):
@@ -367,6 +371,10 @@ class DeleteClusterInput(BaseModel):
     namespace: Optional[str] = Field(
         None,
         description="Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
+    )
+    dry_run: bool = Field(
+        False,
+        description="If True, shows what would be deleted without performing the deletion. Useful for previewing the deletion impact."
     )
 
 
@@ -397,6 +405,10 @@ class CreateRoleInput(BaseModel):
         None,
         description="Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
     )
+    dry_run: bool = Field(
+        False,
+        description="If True, shows the role definition that would be created without creating it. Useful for previewing the configuration."
+    )
 
 
 class UpdateRoleInput(BaseModel):
@@ -414,6 +426,10 @@ class UpdateRoleInput(BaseModel):
         None,
         description="Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
     )
+    dry_run: bool = Field(
+        False,
+        description="If True, shows what changes would be made without applying them. Useful for previewing the update."
+    )
 
 
 class DeleteRoleInput(BaseModel):
@@ -423,6 +439,10 @@ class DeleteRoleInput(BaseModel):
     namespace: Optional[str] = Field(
         None,
         description="Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
+    )
+    dry_run: bool = Field(
+        False,
+        description="If True, shows what would be deleted without performing the deletion. Useful for previewing the deletion impact."
     )
 
 
@@ -452,6 +472,10 @@ class CreateDatabaseInput(BaseModel):
         None,
         description="Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
     )
+    dry_run: bool = Field(
+        False,
+        description="If True, shows the Database CRD definition that would be created without creating it. Useful for previewing the configuration."
+    )
 
 
 class DeleteDatabaseInput(BaseModel):
@@ -461,6 +485,10 @@ class DeleteDatabaseInput(BaseModel):
     namespace: Optional[str] = Field(
         None,
         description="Kubernetes namespace where the cluster exists. If not specified, uses the current namespace from your Kubernetes context."
+    )
+    dry_run: bool = Field(
+        False,
+        description="If True, shows what would be deleted without performing the deletion. Useful for previewing the deletion impact."
     )
 
 
@@ -885,7 +913,8 @@ kubectl get secret {cluster_name}-app -n {namespace} -o jsonpath='{{.data.passwo
 async def scale_postgres_cluster(
     name: str,
     instances: int,
-    namespace: Optional[str] = None
+    namespace: Optional[str] = None,
+    dry_run: bool = False
 ) -> str:
     """
     Scale a PostgreSQL cluster by changing the number of instances.
@@ -899,14 +928,18 @@ async def scale_postgres_cluster(
         instances: New number of instances (1-10). For high availability, use 3 or more.
         namespace: Kubernetes namespace where the cluster exists. If not specified,
                   uses the current namespace from your Kubernetes context.
+        dry_run: If True, shows what would be changed without applying it. Useful for
+                previewing the scaling operation. Default is False.
 
     Returns:
         Success message if the scaling operation is initiated, or error details if it fails.
+        If dry_run=True, returns a preview of the changes that would be made.
 
     Examples:
         - Scale up: scale_postgres_cluster(name="main-db", instances=5)
         - Scale with namespace: scale_postgres_cluster(name="main-db", instances=5, namespace="production")
         - Scale down: scale_postgres_cluster(name="test-db", instances=1)
+        - Preview scaling: scale_postgres_cluster(name="main-db", instances=5, dry_run=True)
 
     Error Handling:
         - 404: Cluster not found. Verify namespace and name.
@@ -924,6 +957,24 @@ async def scale_postgres_cluster(
 
         # Get current cluster
         cluster = await get_cnpg_cluster(namespace, name)
+        current_instances = cluster['spec']['instances']
+
+        # If dry_run, return preview of changes
+        if dry_run:
+            return f"""Dry run: Scaling operation for cluster '{namespace}/{name}'
+
+Current configuration:
+- Instances: {current_instances}
+
+Proposed changes:
+- Instances: {current_instances} → {instances}
+
+Impact:
+- {abs(instances - current_instances)} instance(s) will be {'added' if instances > current_instances else 'removed'}
+- Scaling {'up' if instances > current_instances else 'down'} from {current_instances} to {instances}
+
+To apply this change, call scale_postgres_cluster again with dry_run=False (or omit the dry_run parameter).
+"""
 
         # Update the instances count
         cluster['spec']['instances'] = instances
@@ -939,14 +990,14 @@ async def scale_postgres_cluster(
             name=name,
             body=cluster
         )
-        
+
         return f"""Successfully initiated scaling of cluster '{namespace}/{name}' to {instances} instance(s).
 
 The cluster will perform a rolling update to reach the desired instance count.
 Monitor the scaling progress with:
 get_cluster_status(namespace="{namespace}", name="{name}")
 """
-    
+
     except Exception as e:
         return format_error_message(e, f"scaling cluster {namespace}/{name}")
 
@@ -955,7 +1006,8 @@ get_cluster_status(namespace="{namespace}", name="{name}")
 async def delete_postgres_cluster(
     name: str,
     confirm_deletion: bool = False,
-    namespace: Optional[str] = None
+    namespace: Optional[str] = None,
+    dry_run: bool = False
 ) -> str:
     """
     Delete a PostgreSQL cluster and its associated resources.
@@ -974,14 +1026,18 @@ async def delete_postgres_cluster(
                          This is a required safety mechanism to prevent accidental deletions.
         namespace: Kubernetes namespace where the cluster exists. If not specified,
                   uses the current namespace from your Kubernetes context.
+        dry_run: If True, shows what would be deleted without performing the deletion.
+                Useful for previewing the deletion impact. Default is False.
 
     Returns:
         Success message if deletion is initiated (including count of secrets cleaned up),
         warning message if not confirmed, or error details if it fails.
+        If dry_run=True, returns a preview of what would be deleted.
 
     Examples:
         - Request deletion (shows warning): delete_postgres_cluster(name="old-test-cluster")
         - Confirm deletion: delete_postgres_cluster(name="old-test-cluster", confirm_deletion=True)
+        - Preview deletion: delete_postgres_cluster(name="old-test-cluster", dry_run=True)
 
     Error Handling:
         - 404: Cluster not found. Verify namespace and name.
@@ -998,11 +1054,48 @@ async def delete_postgres_cluster(
         if namespace is None:
             namespace = get_current_namespace()
 
+        # Verify cluster exists
+        cluster = await get_cnpg_cluster(namespace, name)
+
+        # If dry_run, show what would be deleted
+        if dry_run:
+            # Count associated secrets
+            _, core_api = get_kubernetes_clients()
+            label_selector = f"cnpg.io/cluster={name}"
+            secrets = await asyncio.to_thread(
+                core_api.list_namespaced_secret,
+                namespace=namespace,
+                label_selector=label_selector
+            )
+            secret_count = len(secrets.items)
+            secret_names = [s.metadata.name for s in secrets.items]
+
+            spec = cluster.get('spec', {})
+            instances = spec.get('instances', 0)
+            storage_size = spec.get('storage', {}).get('size', 'unknown')
+
+            return f"""Dry run: Deletion preview for cluster '{namespace}/{name}'
+
+Cluster details:
+- Instances: {instances}
+- Storage size per instance: {storage_size}
+- Total storage: {instances}x {storage_size}
+
+Resources that would be deleted:
+- Cluster CRD: {name}
+- Associated secrets: {secret_count} secret(s)
+  {chr(10).join(['  - ' + s for s in secret_names]) if secret_names else '  (none)'}
+
+⚠️  WARNING: This operation would be DESTRUCTIVE and IRREVERSIBLE:
+- All data in this cluster would be PERMANENTLY LOST
+- All databases, tables, and data would be deleted
+- Depending on storage class policy, persistent volumes may be deleted
+
+To proceed with deletion, call delete_postgres_cluster with confirm_deletion=True and dry_run=False (or omit dry_run).
+"""
+
         # Check if deletion is confirmed
         if not confirm_deletion:
-            # Verify cluster exists to provide accurate warning
-            await get_cnpg_cluster(namespace, name)
-
             return f"""⚠️  DELETION NOT CONFIRMED
 
 You are about to delete the PostgreSQL cluster '{namespace}/{name}'.
@@ -1028,9 +1121,6 @@ delete_postgres_cluster(
 
 To cancel, simply do not call the tool again.
 """
-
-        # Verify cluster exists before attempting deletion
-        await get_cnpg_cluster(namespace, name)
 
         # Delete the cluster
         custom_api, core_api = get_kubernetes_clients()
@@ -1199,7 +1289,8 @@ async def create_postgres_role(
     createdb: bool = False,
     createrole: bool = False,
     replication: bool = False,
-    namespace: Optional[str] = None
+    namespace: Optional[str] = None,
+    dry_run: bool = False
 ) -> str:
     """
     Create a new PostgreSQL role/user in a cluster using CloudNativePG's declarative role management.
@@ -1217,13 +1308,68 @@ async def create_postgres_role(
         createrole: Allow creating roles (default: false).
         replication: Allow streaming replication (default: false).
         namespace: Kubernetes namespace.
+        dry_run: If True, shows the role definition that would be created without
+                creating it. Useful for previewing the configuration. Default is False.
 
     Returns:
         Success message with password retrieval instructions.
+        If dry_run=True, returns a preview of the role definition.
     """
     try:
         if namespace is None:
             namespace = get_current_namespace()
+
+        # Get the cluster to verify it exists and check for existing role
+        cluster = await get_cnpg_cluster(namespace, cluster_name)
+        managed_roles = cluster.get('spec', {}).get('managed', {}).get('roles', [])
+
+        # Check if role already exists
+        existing_role = next((r for r in managed_roles if r.get('name') == role_name), None)
+        if existing_role:
+            return f"Error: Role '{role_name}' already exists in cluster '{namespace}/{cluster_name}'."
+
+        # If dry_run, show what would be created
+        if dry_run:
+            secret_name = f"cnpg-{cluster_name}-user-{role_name}"
+
+            role_def = {
+                "name": role_name,
+                "ensure": "present",
+                "login": login,
+                "superuser": superuser,
+                "inherit": inherit,
+                "createdb": createdb,
+                "createrole": createrole,
+                "replication": replication,
+                "passwordSecret": {
+                    "name": secret_name
+                }
+            }
+
+            role_yaml = yaml.dump(role_def, default_flow_style=False, sort_keys=False)
+
+            return f"""Dry run: PostgreSQL role definition for '{role_name}' in cluster '{namespace}/{cluster_name}'
+
+Role definition that would be added to .spec.managed.roles:
+
+```yaml
+{role_yaml}```
+
+Resources that would be created:
+- Kubernetes secret: {secret_name}
+  - Contains auto-generated password (16 characters)
+  - Labeled with cnpg.io/cluster={cluster_name} and cnpg.io/role={role_name}
+
+Role Attributes:
+- Login: {login}
+- Superuser: {superuser}
+- Inherit: {inherit}
+- Create DB: {createdb}
+- Create Role: {createrole}
+- Replication: {replication}
+
+To create this role, call create_postgres_role again with dry_run=False (or omit the dry_run parameter).
+"""
 
         # Generate a secure password
         password = generate_password(16)
@@ -1257,19 +1403,11 @@ async def create_postgres_role(
             body=secret
         )
 
-        # Get the cluster and add the role to .spec.managed.roles
-        cluster = await get_cnpg_cluster(namespace, cluster_name)
-
         # Ensure managed.roles exists
         if 'managed' not in cluster['spec']:
             cluster['spec']['managed'] = {}
         if 'roles' not in cluster['spec']['managed']:
             cluster['spec']['managed']['roles'] = []
-
-        # Check if role already exists
-        existing_role = next((r for r in cluster['spec']['managed']['roles'] if r.get('name') == role_name), None)
-        if existing_role:
-            return f"Error: Role '{role_name}' already exists in cluster '{namespace}/{cluster_name}'."
 
         # Add the new role
         new_role = {
@@ -1336,7 +1474,8 @@ async def update_postgres_role(
     createrole: Optional[bool] = None,
     replication: Optional[bool] = None,
     password: Optional[str] = None,
-    namespace: Optional[str] = None
+    namespace: Optional[str] = None,
+    dry_run: bool = False
 ) -> str:
     """
     Update attributes of an existing PostgreSQL role using CloudNativePG's declarative role management.
@@ -1347,9 +1486,12 @@ async def update_postgres_role(
         login, superuser, inherit, createdb, createrole, replication: Optional attribute changes.
         password: Optional new password. If not provided, password remains unchanged.
         namespace: Kubernetes namespace.
+        dry_run: If True, shows what changes would be made without applying them.
+                Useful for previewing the update. Default is False.
 
     Returns:
         Success message with updated attributes.
+        If dry_run=True, returns a preview of the changes that would be made.
     """
     try:
         if namespace is None:
@@ -1366,55 +1508,78 @@ async def update_postgres_role(
 
         updates = []
 
-        # Update attributes
+        # Build list of proposed updates
         if login is not None:
-            role['login'] = login
-            updates.append(f"Login: {login}")
+            updates.append((f"Login: {role.get('login', False)} → {login}", 'login', login))
 
         if superuser is not None:
-            role['superuser'] = superuser
-            updates.append(f"Superuser: {superuser}")
+            updates.append((f"Superuser: {role.get('superuser', False)} → {superuser}", 'superuser', superuser))
 
         if inherit is not None:
-            role['inherit'] = inherit
-            updates.append(f"Inherit: {inherit}")
+            updates.append((f"Inherit: {role.get('inherit', True)} → {inherit}", 'inherit', inherit))
 
         if createdb is not None:
-            role['createdb'] = createdb
-            updates.append(f"Create DB: {createdb}")
+            updates.append((f"Create DB: {role.get('createdb', False)} → {createdb}", 'createdb', createdb))
 
         if createrole is not None:
-            role['createrole'] = createrole
-            updates.append(f"Create Role: {createrole}")
+            updates.append((f"Create Role: {role.get('createrole', False)} → {createrole}", 'createrole', createrole))
 
         if replication is not None:
-            role['replication'] = replication
-            updates.append(f"Replication: {replication}")
+            updates.append((f"Replication: {role.get('replication', False)} → {replication}", 'replication', replication))
 
         if password is not None:
-            # Update the secret
-            secret_name = f"cnpg-{cluster_name}-user-{role_name}"
-            _, core_api = get_kubernetes_clients()
-
-            try:
-                secret = await asyncio.to_thread(
-                    core_api.read_namespaced_secret,
-                    name=secret_name,
-                    namespace=namespace
-                )
-                secret.data["password"] = base64.b64encode(password.encode()).decode()
-                await asyncio.to_thread(
-                    core_api.replace_namespaced_secret,
-                    name=secret_name,
-                    namespace=namespace,
-                    body=secret
-                )
-                updates.append("Password: updated")
-            except ApiException as e:
-                return f"Error: Secret '{secret_name}' not found. Cannot update password."
+            updates.append(("Password: will be updated", 'password', password))
 
         if not updates:
             return "No updates specified. Please provide at least one attribute to update."
+
+        # If dry_run, show what would change
+        if dry_run:
+            update_text = '\n- '.join([u[0] for u in updates])
+            return f"""Dry run: Update preview for role '{role_name}' in cluster '{namespace}/{cluster_name}'
+
+Current attributes:
+- Login: {role.get('login', False)}
+- Superuser: {role.get('superuser', False)}
+- Inherit: {role.get('inherit', True)}
+- Create DB: {role.get('createdb', False)}
+- Create Role: {role.get('createrole', False)}
+- Replication: {role.get('replication', False)}
+
+Proposed changes:
+- {update_text}
+
+To apply these changes, call update_postgres_role again with dry_run=False (or omit the dry_run parameter).
+"""
+
+        # Apply updates
+        simple_updates = []
+        for update_desc, attr_name, value in updates:
+            if attr_name == 'password':
+                # Update the secret
+                secret_name = f"cnpg-{cluster_name}-user-{role_name}"
+                _, core_api = get_kubernetes_clients()
+
+                try:
+                    secret = await asyncio.to_thread(
+                        core_api.read_namespaced_secret,
+                        name=secret_name,
+                        namespace=namespace
+                    )
+                    secret.data["password"] = base64.b64encode(password.encode()).decode()
+                    await asyncio.to_thread(
+                        core_api.replace_namespaced_secret,
+                        name=secret_name,
+                        namespace=namespace,
+                        body=secret
+                    )
+                    simple_updates.append("Password: updated")
+                except ApiException as e:
+                    return f"Error: Secret '{secret_name}' not found. Cannot update password."
+            else:
+                # Update role attribute
+                role[attr_name] = value
+                simple_updates.append(update_desc)
 
         # Update the cluster
         custom_api, _ = get_kubernetes_clients()
@@ -1428,7 +1593,7 @@ async def update_postgres_role(
             body=cluster
         )
 
-        updates_text = '\n- '.join(updates)
+        updates_text = '\n- '.join(simple_updates)
         return f"""Successfully updated PostgreSQL role '{role_name}' in cluster '{namespace}/{cluster_name}'.
 
 Updated Attributes:
@@ -1445,7 +1610,8 @@ The CloudNativePG operator will reconcile these changes in the database.
 async def delete_postgres_role(
     cluster_name: str,
     role_name: str,
-    namespace: Optional[str] = None
+    namespace: Optional[str] = None,
+    dry_run: bool = False
 ) -> str:
     """
     Delete a PostgreSQL role from a cluster using CloudNativePG's declarative role management.
@@ -1457,9 +1623,12 @@ async def delete_postgres_role(
         cluster_name: Name of the PostgreSQL cluster.
         role_name: Name of the role to delete.
         namespace: Kubernetes namespace.
+        dry_run: If True, shows what would be deleted without performing the deletion.
+                Useful for previewing the deletion impact. Default is False.
 
     Returns:
         Success message.
+        If dry_run=True, returns a preview of what would be deleted.
     """
     try:
         if namespace is None:
@@ -1469,10 +1638,48 @@ async def delete_postgres_role(
         cluster = await get_cnpg_cluster(namespace, cluster_name)
         managed_roles = cluster.get('spec', {}).get('managed', {}).get('roles', [])
 
-        # Find and remove the role
+        # Find the role
         role_index = next((i for i, r in enumerate(managed_roles) if r.get('name') == role_name), None)
         if role_index is None:
             return f"Error: Role '{role_name}' not found in cluster '{namespace}/{cluster_name}'."
+
+        role = managed_roles[role_index]
+
+        # If dry_run, show what would be deleted
+        if dry_run:
+            secret_name = f"cnpg-{cluster_name}-user-{role_name}"
+
+            # Check if secret exists
+            _, core_api = get_kubernetes_clients()
+            try:
+                await asyncio.to_thread(
+                    core_api.read_namespaced_secret,
+                    name=secret_name,
+                    namespace=namespace
+                )
+                secret_exists = True
+            except ApiException:
+                secret_exists = False
+
+            return f"""Dry run: Deletion preview for role '{role_name}' in cluster '{namespace}/{cluster_name}'
+
+Role details:
+- Login: {role.get('login', False)}
+- Superuser: {role.get('superuser', False)}
+- Inherit: {role.get('inherit', True)}
+- Create DB: {role.get('createdb', False)}
+- Create Role: {role.get('createrole', False)}
+- Replication: {role.get('replication', False)}
+
+Resources that would be deleted:
+- Role definition from .spec.managed.roles in cluster CRD
+- Kubernetes secret: {secret_name} {'(exists)' if secret_exists else '(not found)'}
+
+⚠️  WARNING: This operation will drop the role from PostgreSQL.
+Any objects owned by this role or permissions granted to it will be affected.
+
+To proceed with deletion, call delete_postgres_role again with dry_run=False (or omit the dry_run parameter).
+"""
 
         # Remove the role from the list
         managed_roles.pop(role_index)
@@ -1616,7 +1823,8 @@ async def create_postgres_database(
     database_name: str,
     owner: str,
     reclaim_policy: Literal["retain", "delete"] = "retain",
-    namespace: Optional[str] = None
+    namespace: Optional[str] = None,
+    dry_run: bool = False
 ) -> str:
     """
     Create a new PostgreSQL database using CloudNativePG's Database CRD.
@@ -1629,9 +1837,12 @@ async def create_postgres_database(
         owner: Name of the role that will own the database.
         reclaim_policy: 'retain' to keep database after CRD deletion, 'delete' to remove it.
         namespace: Kubernetes namespace.
+        dry_run: If True, shows the Database CRD definition that would be created without
+                creating it. Useful for previewing the configuration. Default is False.
 
     Returns:
         Success message with database details.
+        If dry_run=True, returns a preview of the Database CRD definition.
     """
     try:
         if namespace is None:
@@ -1662,6 +1873,29 @@ async def create_postgres_database(
                 "databaseReclaimPolicy": reclaim_policy
             }
         }
+
+        # If dry_run, return the Database CRD definition
+        if dry_run:
+            database_yaml = yaml.dump(database_crd, default_flow_style=False, sort_keys=False)
+            return f"""Dry run: Database CRD definition for '{database_name}' in cluster '{namespace}/{cluster_name}'
+
+This is the Database CRD that would be created:
+
+```yaml
+{database_yaml}```
+
+Database Details:
+- Name: {database_name}
+- Owner: {owner}
+- Reclaim Policy: {reclaim_policy}
+- CRD Name: {crd_name}
+
+Reclaim Policy Behavior:
+- retain: Database will be kept in PostgreSQL even if the CRD is deleted
+- delete: Database will be dropped from PostgreSQL when the CRD is deleted
+
+To create this database, call create_postgres_database again with dry_run=False (or omit the dry_run parameter).
+"""
 
         # Create the Database CRD
         custom_api, _ = get_kubernetes_clients()
@@ -1696,7 +1930,8 @@ kubectl get database {crd_name} -n {namespace}
 async def delete_postgres_database(
     cluster_name: str,
     database_name: str,
-    namespace: Optional[str] = None
+    namespace: Optional[str] = None,
+    dry_run: bool = False
 ) -> str:
     """
     Delete a PostgreSQL database by removing its Database CRD.
@@ -1708,9 +1943,12 @@ async def delete_postgres_database(
         cluster_name: Name of the PostgreSQL cluster.
         database_name: Name of the database to delete.
         namespace: Kubernetes namespace.
+        dry_run: If True, shows what would be deleted without performing the deletion.
+                Useful for previewing the deletion impact. Default is False.
 
     Returns:
         Success message.
+        If dry_run=True, returns a preview of what would be deleted.
     """
     try:
         if namespace is None:
@@ -1731,11 +1969,41 @@ async def delete_postgres_database(
                 plural=CNPG_DATABASE_PLURAL,
                 name=crd_name
             )
-            reclaim_policy = database_crd.get('spec', {}).get('databaseReclaimPolicy', 'retain')
+            spec = database_crd.get('spec', {})
+            reclaim_policy = spec.get('databaseReclaimPolicy', 'retain')
+            owner = spec.get('owner', 'unknown')
         except ApiException as e:
             if e.status == 404:
                 return f"Error: Database CRD '{crd_name}' not found for database '{database_name}' in cluster '{namespace}/{cluster_name}'."
             raise
+
+        # If dry_run, show what would be deleted
+        if dry_run:
+            action = "dropped from PostgreSQL" if reclaim_policy == "delete" else "retained in PostgreSQL"
+
+            return f"""Dry run: Deletion preview for database '{database_name}' in cluster '{namespace}/{cluster_name}'
+
+Database Details:
+- Name: {database_name}
+- Owner: {owner}
+- Reclaim Policy: {reclaim_policy}
+- CRD Name: {crd_name}
+
+Resources that would be deleted:
+- Database CRD: {crd_name}
+
+Impact based on reclaim policy:
+- Reclaim Policy: {reclaim_policy}
+- Result: The database will be {action}
+
+Reclaim Policy Behavior:
+- retain: Database CRD is deleted but the database remains in PostgreSQL
+- delete: Database CRD is deleted AND the database is dropped from PostgreSQL
+
+⚠️  WARNING: If reclaim_policy is 'delete', all data in this database will be PERMANENTLY LOST.
+
+To proceed with deletion, call delete_postgres_database again with dry_run=False (or omit the dry_run parameter).
+"""
 
         # Delete the Database CRD
         await asyncio.to_thread(

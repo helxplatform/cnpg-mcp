@@ -29,8 +29,8 @@ python cnpg_mcp_server.py
 ## What's New in v1.2.0
 
 ### Publication Ready
-- ✅ **Smithery.ai configuration** - Published to MCP server registry
-- ✅ **Python package setup** - Installable via pip
+- ✅ **Smithery.ai configuration** - smithery.yaml for build config, smithery.json for metadata
+- ✅ **Python package setup** - pyproject.toml and setup.py for pip installation
 - ✅ **Clean credentials** - Removed all hardcoded development values
 - ✅ **Fixed documentation** - kubectl CLI not required (uses Python client)
 
@@ -92,8 +92,8 @@ python cnpg_mcp_server.py
 - Destructive operations require explicit confirmation
 
 ## Changes Since v1.1.0
-- Added Smithery.ai configuration
-- Added Python package setup (setup.py, MANIFEST.in)
+- Added Smithery.ai configuration (smithery.yaml, smithery.json)
+- Added Python package setup (pyproject.toml, setup.py, MANIFEST.in)
 - Removed hardcoded development credentials
 - Fixed documentation about kubectl requirement
 - Enhanced README with multiple installation options
