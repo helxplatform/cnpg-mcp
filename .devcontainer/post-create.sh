@@ -12,6 +12,7 @@ sudo chown -R "$(id -u)":"$(id -g)" "$HOME/.npm" "$HOME/.cache" "$HOME/.config" 
 echo "Installing Claude Code..."
 npm install -g @anthropic-ai/claude-code
 npm install -g @modelcontextprotocol/inspector
+npm install -g @upstash/context7-mcp
 
 # Add other setup commands here as needed
 pip install -r requirements.txt

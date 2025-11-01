@@ -13,6 +13,7 @@ Transport Modes:
 import asyncio
 import json
 import sys
+import os
 import argparse
 import secrets
 import string
@@ -2076,38 +2077,94 @@ async def run_stdio_transport():
 
 async def run_http_transport(host: str = "0.0.0.0", port: int = 3000):
     """
-    Run the MCP server using HTTP/SSE transport.
+    Run the MCP server using HTTP transport (Streamable HTTP) with OIDC authentication.
 
     This mode allows multiple clients to connect remotely and is suitable
-    for team environments and production deployments.
+    for team environments and production deployments. The MCP endpoint is
+    available at /mcp.
 
-    FastMCP makes HTTP/SSE transport simple with run_sse_async()!
+    OIDC authentication is enforced via environment variables:
+        OIDC_ISSUER: OIDC provider URL (required)
+        OIDC_AUDIENCE: Expected JWT audience (required)
+        OIDC_JWKS_URI: Optional JWKS URI override
+        DCR_PROXY_URL: Optional DCR proxy for client registration
+        OIDC_SCOPE: Required scope (default: openid)
     """
-    print(f"Starting CloudNativePG MCP server with HTTP/SSE transport on {host}:{port}...", file=sys.stderr)
+    print(f"Starting CloudNativePG MCP server with HTTP transport on {host}:{port}...", file=sys.stderr)
     print(f"FastMCP server initialized with name: cloudnative-pg", file=sys.stderr)
+    print(f"MCP endpoint available at: http://{host}:{port}/mcp", file=sys.stderr)
 
-    # FastMCP handles HTTP/SSE transport automatically
-    # This will create a server that can handle multiple concurrent clients
-    await mcp.run_sse_async(host=host, port=port)
+    # Initialize OIDC authentication if configured
+    auth_provider = None
+    middleware = []
 
-    # FastMCP automatically provides:
-    # - GET /sse - Server-Sent Events endpoint for bidirectional communication
-    # - POST /message - Endpoint for client messages
-    # - Built-in authentication support (via mcp.auth)
-    # - CORS handling
-    # - Error handling
-    #
-    # To add authentication:
-    # @mcp.auth
-    # async def authenticate(request):
-    #     # Verify API key, JWT, etc.
-    #     return True  # or raise an exception
-    #
-    # For production:
-    # - Run behind a reverse proxy (nginx, traefik) for TLS
-    # - Set FASTMCP_AUTH_SECRET environment variable
-    # - Consider rate limiting
-    # - Enable audit logging
+    if os.getenv("OIDC_ISSUER"):
+        try:
+            from auth_oidc import OIDCAuthProvider, OIDCAuthMiddleware
+
+            print("Initializing OIDC authentication...", file=sys.stderr)
+            auth_provider = OIDCAuthProvider()
+
+            # Create middleware for authentication
+            middleware.append(
+                lambda app: OIDCAuthMiddleware(
+                    app,
+                    auth_provider,
+                    exclude_paths=["/health", "/.well-known/"]
+                )
+            )
+
+            print(f"✓ OIDC authentication enabled", file=sys.stderr)
+            print(f"  Issuer: {auth_provider.issuer}", file=sys.stderr)
+            print(f"  Audience: {auth_provider.audience}", file=sys.stderr)
+
+        except Exception as e:
+            print(f"ERROR: Failed to initialize OIDC authentication: {e}", file=sys.stderr)
+            print("Server will NOT start without valid OIDC configuration.", file=sys.stderr)
+            raise
+    else:
+        print("WARNING: OIDC authentication NOT configured!", file=sys.stderr)
+        print("Set OIDC_ISSUER and OIDC_AUDIENCE environment variables to enable.", file=sys.stderr)
+        print("Running in INSECURE mode (development only).", file=sys.stderr)
+
+    # Get Starlette app with middleware
+    # Use "http" transport (Streamable HTTP) with /mcp endpoint
+    # This is the recommended transport for production deployments
+    app = mcp.http_app(
+        transport="http",
+        path="/mcp",
+        middleware=middleware if middleware else None
+    )
+
+    # Add OAuth metadata routes if auth provider is configured
+    if auth_provider:
+        metadata_routes = auth_provider.get_metadata_routes()
+        for route in metadata_routes:
+            app.routes.append(route)
+
+    # Add health check endpoint (unauthenticated)
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    async def health_check(request):
+        return JSONResponse({"status": "healthy", "service": "cnpg-mcp-server"})
+
+    app.routes.insert(0, Route("/health", health_check, methods=["GET"]))
+
+    # Run with uvicorn
+    import uvicorn
+
+    config = uvicorn.Config(
+        app,
+        host=host,
+        port=port,
+        log_level="info",
+        access_log=True,
+        server_header=False,
+    )
+
+    server = uvicorn.Server(config)
+    await server.serve()
 
 
 # ============================================================================

@@ -13,6 +13,10 @@
     "ghcr.io/devcontainers/features/python:1": { "version": "3.12" }
   },
 
+  "runArgs": [
+    "--env-file", "${localEnv:HOME}${localEnv:USERPROFILE}/.vscode-projects/${localWorkspaceFolderBasename}/local.env"
+  ],
+
   // Mount Claude credentials to persist across container rebuilds, per-project
   "mounts": [
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.vscode-projects/${localWorkspaceFolderBasename}/claude/.claude,target=/home/vscode/.claude,type=bind,consistency=cached",
