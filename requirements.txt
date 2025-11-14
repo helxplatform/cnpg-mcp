@@ -33,3 +33,6 @@ authlib>=1.3.0
 
 # Cryptography for JWT verification
 cryptography>=41.0.0
+
+requests
+python-dotenv
