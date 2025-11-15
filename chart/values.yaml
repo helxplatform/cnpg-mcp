@@ -2,10 +2,10 @@
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
 
-replicaCount: 2
+replicaCount: 1
 
 image:
-  repository: your-registry.example.com/cnpg-mcp-server
+  repository: your-registry.example.com/cnpg-mcp
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
   tag: ""
@@ -21,7 +21,7 @@ serviceAccount:
   annotations: {}
   # The name of the service account to use.
   # If not set and create is true, a name is generated using the fullname template
-  name: ""
+  name: "cnpg-mcp"
 
 podAnnotations: {}
 
@@ -106,3 +106,19 @@ oidc:
 
   # OPTIONAL: Required OAuth2 scope (default: openid)
   # scope: "openid"
+
+  # OPTIONAL: Use existing Kubernetes Secret instead of ConfigMap
+  # If specified, the deployment will load OIDC config from this secret
+  # instead of creating a ConfigMap. Useful for external secret management.
+  # The secret must contain a YAML file with the OIDC configuration.
+  #
+  # Example secret creation:
+  #   kubectl create secret generic my-oidc-secret \
+  #     --from-file=oidc.yaml=./oidc-config.yaml
+  #
+  # Or use the provided script with auth0-config.json:
+  #   python bin/create_secrets.py --namespace <namespace>
+  #
+  # existingSecret:
+  #   name: "my-oidc-secret"        # Name of the existing secret
+  #   configKey: "oidc.yaml"        # Key in secret containing YAML config (default: oidc.yaml)

@@ -342,10 +342,29 @@ Secrets Created:
     print(f"Replace:          {args.replace}")
     print()
     
-    # Prepare secret data
+    # Prepare secret data as YAML config file (not env vars)
+    try:
+        import yaml
+    except ImportError:
+        print("❌ PyYAML not installed. Install with: pip install pyyaml")
+        sys.exit(1)
+
+    # Create YAML config file content
+    oidc_config = {
+        'issuer': auth_config['issuer'],
+        'audience': auth_config['audience']
+    }
+
+    # Add optional DCR proxy if present
+    if auth_config.get('dcr_enabled'):
+        # Note: DCR proxy URL would need to be in auth0-config.json
+        # For now, this is a placeholder for future enhancement
+        pass
+
+    oidc_yaml_content = yaml.dump(oidc_config, default_flow_style=False, sort_keys=False)
+
     config_data = {
-        'AUTH0_ISSUER': auth_config['issuer'],
-        'AUTH0_AUDIENCE': auth_config['audience']
+        'oidc.yaml': oidc_yaml_content
     }
     
     mgmt_data = {
@@ -357,9 +376,15 @@ Secrets Created:
     
     print("Secrets to create:")
     print()
-    print("1. mcp-auth0-config")
+    print("1. mcp-auth0-config (OIDC configuration as YAML file)")
     for key, value in config_data.items():
-        print(f"   - {key}: {value}")
+        if key == 'oidc.yaml':
+            print(f"   - {key}:")
+            for line in value.split('\n'):
+                if line.strip():
+                    print(f"       {line}")
+        else:
+            print(f"   - {key}: {value}")
     print()
     
     print("2. mcp-auth0-mgmt")

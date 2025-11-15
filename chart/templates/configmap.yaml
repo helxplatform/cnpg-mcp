@@ -1,3 +1,4 @@
+{{- if not .Values.oidc.existingSecret }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -5,23 +6,28 @@ metadata:
   labels:
     {{- include "cnpg-mcp.labels" . | nindent 4 }}
 data:
-  # REQUIRED: OIDC Issuer URL
-  OIDC_ISSUER: {{ .Values.oidc.issuer | quote }}
+  oidc.yaml: |
+    # OIDC/OAuth2 Authentication Configuration
+    # Auto-generated from Helm values
 
-  # REQUIRED: Expected audience claim in JWT tokens
-  OIDC_AUDIENCE: {{ .Values.oidc.audience | quote }}
+    # REQUIRED: OIDC Issuer URL
+    issuer: {{ .Values.oidc.issuer | quote }}
 
-  {{- if .Values.oidc.jwksUri }}
-  # OPTIONAL: Override JWKS URI
-  OIDC_JWKS_URI: {{ .Values.oidc.jwksUri | quote }}
-  {{- end }}
+    # REQUIRED: Expected audience claim in JWT tokens
+    audience: {{ .Values.oidc.audience | quote }}
 
-  {{- if .Values.oidc.dcrProxyUrl }}
-  # OPTIONAL: DCR proxy URL
-  DCR_PROXY_URL: {{ .Values.oidc.dcrProxyUrl | quote }}
-  {{- end }}
+    {{- if .Values.oidc.jwksUri }}
+    # OPTIONAL: Override JWKS URI (auto-discovered from issuer by default)
+    jwks_uri: {{ .Values.oidc.jwksUri | quote }}
+    {{- end }}
 
-  {{- if .Values.oidc.scope }}
-  # OPTIONAL: Required OAuth2 scope
-  OIDC_SCOPE: {{ .Values.oidc.scope | quote }}
-  {{- end }}
+    {{- if .Values.oidc.dcrProxyUrl }}
+    # OPTIONAL: DCR (Dynamic Client Registration) proxy URL
+    dcr_proxy_url: {{ .Values.oidc.dcrProxyUrl | quote }}
+    {{- end }}
+
+    {{- if .Values.oidc.scope }}
+    # OPTIONAL: Required OAuth2 scope
+    scope: {{ .Values.oidc.scope | quote }}
+    {{- end }}
+{{- end }}

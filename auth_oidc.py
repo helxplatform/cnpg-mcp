@@ -16,6 +16,7 @@ import os
 import logging
 from typing import Optional, Dict, Any
 from urllib.parse import urljoin
+from pathlib import Path
 
 import httpx
 from authlib.jose import jwt, JsonWebKey, JWTClaims
@@ -27,6 +28,58 @@ from starlette.routing import Route
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+
+def load_oidc_config_from_file(config_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """
+    Load OIDC configuration from a YAML file.
+
+    Searches in order:
+    1. Provided config_path
+    2. /etc/mcp/oidc.yaml (default Kubernetes ConfigMap mount)
+    3. /config/oidc.yaml
+    4. ./oidc.yaml
+
+    Args:
+        config_path: Optional explicit path to config file
+
+    Returns:
+        Dict with OIDC config or None if no file found
+    """
+    search_paths = []
+
+    if config_path:
+        search_paths.append(config_path)
+
+    # Standard Kubernetes ConfigMap/Secret mount paths
+    search_paths.extend([
+        "/etc/mcp/oidc.yaml",
+        "/config/oidc.yaml",
+        "./oidc.yaml"
+    ])
+
+    for path_str in search_paths:
+        path = Path(path_str)
+        if path.exists() and path.is_file():
+            try:
+                logger.info(f"Loading OIDC config from: {path}")
+
+                with open(path, 'r') as f:
+                    try:
+                        import yaml
+                        config = yaml.safe_load(f)
+                        logger.info(f"✓ Successfully loaded OIDC config from {path}")
+                        return config
+                    except ImportError:
+                        logger.error("PyYAML not installed. Install with: pip install pyyaml")
+                        raise
+
+            except Exception as e:
+                logger.warning(f"Failed to load config from {path}: {e}")
+                continue
+
+    logger.debug("No OIDC config file found, will use environment variables")
+    return None
 
 
 class JWKSCache:
@@ -92,36 +145,51 @@ class OIDCAuthProvider:
         audience: Optional[str] = None,
         jwks_uri: Optional[str] = None,
         dcr_proxy_url: Optional[str] = None,
-        required_scope: str = "openid"
+        required_scope: str = "openid",
+        config_path: Optional[str] = None
     ):
         """
         Initialize OIDC authentication provider.
 
+        Configuration priority (highest to lowest):
+        1. Explicit parameters passed to __init__
+        2. Config file (/etc/mcp/oidc.yaml or config_path)
+        3. Environment variables
+        4. Defaults
+
         Args:
-            issuer: OIDC issuer URL (overrides env var)
-            audience: Expected audience claim (overrides env var)
+            issuer: OIDC issuer URL (overrides config file and env var)
+            audience: Expected audience claim (overrides config file and env var)
             jwks_uri: JWKS URI (overrides auto-discovery)
             dcr_proxy_url: DCR proxy URL for client registration
             required_scope: Required OAuth2 scope (default: openid)
+            config_path: Optional path to OIDC config file (YAML)
         """
-        # Load from environment or use provided values
-        self.issuer = issuer or os.getenv("OIDC_ISSUER")
-        self.audience = audience or os.getenv("OIDC_AUDIENCE")
-        self.jwks_uri = jwks_uri or os.getenv("OIDC_JWKS_URI")
-        self.dcr_proxy_url = dcr_proxy_url or os.getenv("DCR_PROXY_URL")
-        self.required_scope = required_scope or os.getenv("OIDC_SCOPE", "openid")
+        # Try to load from config file first
+        config = load_oidc_config_from_file(config_path) or {}
+
+        # Priority: explicit params > config file > env vars
+        self.issuer = issuer or config.get("issuer") or os.getenv("OIDC_ISSUER")
+        self.audience = audience or config.get("audience") or os.getenv("OIDC_AUDIENCE")
+        self.jwks_uri = jwks_uri or config.get("jwks_uri") or os.getenv("OIDC_JWKS_URI")
+        self.dcr_proxy_url = dcr_proxy_url or config.get("dcr_proxy_url") or os.getenv("DCR_PROXY_URL")
+        self.required_scope = required_scope or config.get("scope") or os.getenv("OIDC_SCOPE", "openid")
 
         # Validate required configuration
         if not self.issuer:
             raise ValueError(
-                "OIDC issuer is required. Set OIDC_ISSUER environment variable "
-                "or pass issuer parameter."
+                "OIDC issuer is required. Provide via:\n"
+                "  1. Config file at /etc/mcp/oidc.yaml with 'issuer' key\n"
+                "  2. OIDC_ISSUER environment variable\n"
+                "  3. Pass issuer parameter to OIDCAuthProvider"
             )
 
         if not self.audience:
             raise ValueError(
-                "OIDC audience is required. Set OIDC_AUDIENCE environment variable "
-                "or pass audience parameter."
+                "OIDC audience is required. Provide via:\n"
+                "  1. Config file at /etc/mcp/oidc.yaml with 'audience' key\n"
+                "  2. OIDC_AUDIENCE environment variable\n"
+                "  3. Pass audience parameter to OIDCAuthProvider"
             )
 
         # Auto-discover JWKS URI if not provided

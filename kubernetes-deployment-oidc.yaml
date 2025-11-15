@@ -73,7 +73,7 @@ spec:
 
       containers:
       - name: mcp-server
-        image: your-registry.example.com/cnpg-mcp-server:latest
+        image: your-registry.example.com/cnpg-mcp:latest
         imagePullPolicy: Always
 
         ports:

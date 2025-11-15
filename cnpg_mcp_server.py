@@ -2098,11 +2098,17 @@ async def run_http_transport(host: str = "0.0.0.0", port: int = 4204):
     auth_provider = None
     middleware = []
 
-    if os.getenv("OIDC_ISSUER"):
+    # Check if OIDC should be enabled (config file or env var)
+    import os
+    from pathlib import Path
+    oidc_config_exists = Path("/etc/mcp/oidc.yaml").exists() or os.getenv("OIDC_ISSUER")
+
+    if oidc_config_exists:
         try:
             from auth_oidc import OIDCAuthProvider, OIDCAuthMiddleware
 
             print("Initializing OIDC authentication...", file=sys.stderr)
+            # OIDCAuthProvider will check config file first, then env vars
             auth_provider = OIDCAuthProvider()
 
             # Create middleware for authentication
@@ -2124,7 +2130,9 @@ async def run_http_transport(host: str = "0.0.0.0", port: int = 4204):
             raise
     else:
         print("WARNING: OIDC authentication NOT configured!", file=sys.stderr)
-        print("Set OIDC_ISSUER and OIDC_AUDIENCE environment variables to enable.", file=sys.stderr)
+        print("Provide OIDC config via:", file=sys.stderr)
+        print("  1. Config file at /etc/mcp/oidc.yaml (recommended for Kubernetes)", file=sys.stderr)
+        print("  2. Environment variables: OIDC_ISSUER and OIDC_AUDIENCE", file=sys.stderr)
         print("Running in INSECURE mode (development only).", file=sys.stderr)
 
     # Get Starlette app with middleware

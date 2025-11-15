@@ -38,14 +38,21 @@ spec:
               containerPort: {{ .Values.service.port }}
               protocol: TCP
 
-          # Load OIDC configuration from ConfigMap
-          envFrom:
-            - configMapRef:
-                name: {{ include "cnpg-mcp.fullname" . }}-oidc-config
-
           env:
             - name: PYTHONUNBUFFERED
               value: "1"
+
+          # Mount OIDC configuration as volume
+          volumeMounts:
+            {{- if .Values.oidc.existingSecret }}
+            - name: oidc-config
+              mountPath: /etc/mcp
+              readOnly: true
+            {{- else }}
+            - name: oidc-config
+              mountPath: /etc/mcp
+              readOnly: true
+            {{- end }}
 
           livenessProbe:
             httpGet:
@@ -69,6 +76,25 @@ spec:
 
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+
+      # Define volumes for OIDC configuration
+      volumes:
+        {{- if .Values.oidc.existingSecret }}
+        - name: oidc-config
+          secret:
+            secretName: {{ .Values.oidc.existingSecret.name }}
+            items:
+              - key: {{ .Values.oidc.existingSecret.configKey | default "oidc.yaml" }}
+                path: oidc.yaml
+        {{- else }}
+        - name: oidc-config
+          configMap:
+            name: {{ include "cnpg-mcp.fullname" . }}-oidc-config
+            items:
+              - key: oidc.yaml
+                path: oidc.yaml
+        {{- end }}
+
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
