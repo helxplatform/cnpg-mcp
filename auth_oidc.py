@@ -349,17 +349,49 @@ class OIDCAuthProvider:
         # Protected resource metadata endpoint (RFC 8414)
         async def oauth_metadata(request):
             """OAuth 2.0 Authorization Server Metadata (RFC 8414)"""
+            # Fetch upstream OIDC configuration to get endpoints
+            import httpx
+            upstream_config = {}
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(
+                        f"{self.issuer}/.well-known/openid-configuration",
+                        timeout=5.0
+                    )
+                    if response.status_code == 200:
+                        upstream_config = response.json()
+            except Exception as e:
+                logger.warning(f"Failed to fetch upstream OIDC config: {e}")
+
+            # Use upstream endpoints if available, otherwise derive from issuer
+            token_endpoint = upstream_config.get("token_endpoint") or (
+                f"{self.issuer}/oauth/token" if "auth0.com" in self.issuer
+                else f"{self.issuer}/protocol/openid-connect/token"
+            )
+            authorization_endpoint = upstream_config.get("authorization_endpoint") or (
+                f"{self.issuer}/authorize" if "auth0.com" in self.issuer
+                else f"{self.issuer}/protocol/openid-connect/auth"
+            )
+
             metadata = {
                 "issuer": self.issuer,
+                "authorization_endpoint": authorization_endpoint,
+                "token_endpoint": token_endpoint,
                 "jwks_uri": self.jwks_uri,
                 "scopes_supported": [self.required_scope, "openid"],
                 "response_types_supported": ["code"],
                 "grant_types_supported": ["authorization_code", "client_credentials"],
                 "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
+                "subject_types_supported": ["public"],
+                "id_token_signing_alg_values_supported": ["RS256"],
             }
 
-            # Add DCR proxy registration endpoint if configured
-            if self.dcr_proxy_url:
+            # Add registration endpoint from upstream config or DCR proxy
+            if upstream_config.get("registration_endpoint"):
+                # Use native DCR from IdP (Auth0, Keycloak, etc.)
+                metadata["registration_endpoint"] = upstream_config["registration_endpoint"]
+            elif self.dcr_proxy_url:
+                # Use DCR proxy for IdPs without native DCR support
                 metadata["registration_endpoint"] = self.dcr_proxy_url
 
             return JSONResponse(metadata)
@@ -412,24 +444,39 @@ class OIDCAuthMiddleware(BaseHTTPMiddleware):
             return response
 
         except ValueError as e:
-            # Authentication failed - return 401
+            # Authentication failed - return 401 with WWW-Authenticate header
             logger.warning(f"Authentication failed for {request.url.path}: {e}")
+
+            # Build WWW-Authenticate header per RFC 6750
+            www_authenticate = f'Bearer realm="MCP API"'
+            if "Missing" in str(e):
+                www_authenticate += ', error="invalid_request"'
+            else:
+                www_authenticate += ', error="invalid_token"'
+            www_authenticate += f', error_description="{str(e)}"'
+
             return JSONResponse(
                 status_code=401,
                 content={
                     "error": "unauthorized",
                     "error_description": str(e)
+                },
+                headers={
+                    "WWW-Authenticate": www_authenticate
                 }
             )
 
         except JoseError as e:
-            # Token verification failed - return 401
+            # Token verification failed - return 401 with WWW-Authenticate header
             logger.warning(f"Token verification failed for {request.url.path}: {e}")
             return JSONResponse(
                 status_code=401,
                 content={
                     "error": "invalid_token",
                     "error_description": "Token verification failed"
+                },
+                headers={
+                    "WWW-Authenticate": 'Bearer realm="MCP API", error="invalid_token", error_description="Token verification failed"'
                 }
             )
 

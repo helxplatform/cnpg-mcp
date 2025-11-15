@@ -42,13 +42,13 @@ EXAMPLES:
     $0 --transport http --url http://localhost:4204
 
     # Test HTTP transport with authentication
-    $0 --transport http --url http://localhost:4204 --token "eyJ..."
+    $0 --transport http --url https://cnpg-mcp.wat.im --token "eyJ..."
 
     # Test HTTP transport with token from file
-    $0 --transport http --url https://mcp-api.example.com --token-file token.txt
+    $0 --transport http --url https://cnpg-mcp.wat.im --token-file token.txt
 
     # Test HTTP transport using environment variable for URL
-    export MCP_HTTP_URL=https://mcp-api.example.com
+    export MCP_HTTP_URL=https://cnpg-mcp.wat.im
     $0 --transport http --token-file token.txt
 
 ENVIRONMENT VARIABLES:
@@ -58,7 +58,7 @@ NOTES:
     - Requires npx and @modelcontextprotocol/inspector
     - For stdio mode, the server runs as a subprocess
     - For HTTP mode with OIDC, you must provide a valid JWT token
-    - HTTP mode without OIDC (development only) doesn't require a token
+    - Inspector runs a local proxy that forwards requests to your server
 
 EOF
     exit 0
@@ -107,7 +107,7 @@ if [[ -n "$TOKEN_FILE" ]]; then
         echo -e "${RED}Error: Token file not found: $TOKEN_FILE${NC}"
         exit 1
     fi
-    TOKEN=$(cat "$TOKEN_FILE" | tr -d '\n')
+    TOKEN=$(cat "$TOKEN_FILE" | tr -d '\n' | tr -d ' ')
     if [[ -z "$TOKEN" ]]; then
         echo -e "${RED}Error: Token file is empty: $TOKEN_FILE${NC}"
         exit 1
@@ -158,28 +158,30 @@ elif [[ "$TRANSPORT" == "http" ]]; then
     echo ""
     echo -e "${GREEN}Starting MCP Inspector...${NC}"
     echo "The inspector will connect to the HTTP endpoint."
+    echo "Inspector runs a local proxy that forwards requests to your server."
     echo "Press Ctrl+C to exit."
     echo ""
 
-    # Prepare headers for HTTP request
-    HEADERS=""
-    if [[ -n "$TOKEN" ]]; then
-        HEADERS="-H \"Authorization: Bearer $TOKEN\""
-    fi
-
-    # Run inspector with HTTP transport
-    # Note: The MCP Inspector expects the URL to the MCP endpoint (typically /mcp or /sse)
-    # We append /mcp to the base URL
+    # MCP Inspector expects the full URL including protocol
     MCP_ENDPOINT="${HTTP_URL}/mcp"
 
     echo -e "${BLUE}Connecting to:${NC} $MCP_ENDPOINT"
     echo ""
 
+    # Build inspector command with proper header handling
     if [[ -n "$TOKEN" ]]; then
-        # With authentication
-        npx @modelcontextprotocol/inspector "$MCP_ENDPOINT" -H "Authorization: Bearer $TOKEN"
+        # Inspector expects headers in this format for HTTP transport
+        # The -H flag passes headers through the proxy to the backend
+        echo -e "${BLUE}Passing Authorization header through Inspector proxy...${NC}"
+        echo ""
+        npx @modelcontextprotocol/inspector \
+            --transport http \
+            --url "$MCP_ENDPOINT" \
+            --header "Authorization: Bearer $TOKEN"
     else
         # Without authentication
-        npx @modelcontextprotocol/inspector "$MCP_ENDPOINT"
+        npx @modelcontextprotocol/inspector \
+            --transport http \
+            --url "$MCP_ENDPOINT"
     fi
 fi
