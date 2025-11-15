@@ -2106,16 +2106,18 @@ async def run_http_transport(host: str = "0.0.0.0", port: int = 4204):
     if oidc_config_exists:
         try:
             from auth_oidc import OIDCAuthProvider, OIDCAuthMiddleware
+            from starlette.middleware import Middleware
 
             print("Initializing OIDC authentication...", file=sys.stderr)
             # OIDCAuthProvider will check config file first, then env vars
             auth_provider = OIDCAuthProvider()
 
-            # Create middleware for authentication
+            # Create middleware using Starlette's Middleware wrapper
+            # This is the format Starlette expects when building middleware stack
             middleware.append(
-                lambda app: OIDCAuthMiddleware(
-                    app,
-                    auth_provider,
+                Middleware(
+                    OIDCAuthMiddleware,
+                    auth_provider=auth_provider,
                     exclude_paths=["/healthz", "/readyz", "/.well-known/"]
                 )
             )
@@ -2135,22 +2137,15 @@ async def run_http_transport(host: str = "0.0.0.0", port: int = 4204):
         print("  2. Environment variables: OIDC_ISSUER and OIDC_AUDIENCE", file=sys.stderr)
         print("Running in INSECURE mode (development only).", file=sys.stderr)
 
-    # Get Starlette app with middleware
+    # Get Starlette app without middleware
     # Use "http" transport (Streamable HTTP) with /mcp endpoint
     # This is the recommended transport for production deployments
     app = mcp.http_app(
         transport="http",
-        path="/mcp",
-        middleware=middleware if middleware else None
+        path="/mcp"
     )
 
-    # Add OAuth metadata routes if auth provider is configured
-    if auth_provider:
-        metadata_routes = auth_provider.get_metadata_routes()
-        for route in metadata_routes:
-            app.routes.append(route)
-
-    # Add health check endpoints (unauthenticated)
+    # Add health check endpoints (unauthenticated) - must be added before wrapping with auth
     from starlette.responses import JSONResponse
     from starlette.routing import Route
 
@@ -2165,6 +2160,27 @@ async def run_http_transport(host: str = "0.0.0.0", port: int = 4204):
 
     app.routes.insert(0, Route("/healthz", liveness_check, methods=["GET"]))
     app.routes.insert(0, Route("/readyz", readiness_check, methods=["GET"]))
+
+    # Add OAuth metadata routes if auth provider is configured
+    if auth_provider:
+        metadata_routes = auth_provider.get_metadata_routes()
+        for route in metadata_routes:
+            app.routes.append(route)
+
+    # Wrap the app with OIDC middleware if configured
+    # This must be done AFTER adding all routes
+    if middleware:
+        from starlette.middleware import Middleware
+        from starlette.applications import Starlette
+
+        # Extract the OIDC middleware config
+        oidc_middleware_config = middleware[0]
+
+        # Apply middleware by wrapping the app
+        app.add_middleware(
+            oidc_middleware_config.cls,
+            **oidc_middleware_config.kwargs
+        )
 
     # Run with uvicorn
     import uvicorn
