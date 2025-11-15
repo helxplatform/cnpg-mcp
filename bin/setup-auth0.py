@@ -360,7 +360,104 @@ class Auth0MCPSetup:
         except Exception as e:
             print(f"❌ Failed to create M2M application: {e}")
             raise
-    
+
+    def create_test_api_client(
+        self,
+        api_identifier: str,
+        name: str = "MCP Test Client",
+        existing_secret: Optional[str] = None,
+        recreate: bool = False
+    ) -> Tuple[Dict[str, Any], str, str]:
+        """Create M2M test client authorized for the MCP API."""
+        print(f"\n🧪 Setting up Test M2M Client for API access: {name}...")
+
+        # Check if client exists
+        all_clients = self._make_request("GET", "/clients")
+        existing = next((c for c in all_clients if c.get("name") == name), None)
+
+        if existing and recreate:
+            print(f"🔄 Recreating test client (--recreate-client specified)...")
+            if self.delete_client(existing['client_id']):
+                print(f"✅ Deleted existing client")
+                existing = None
+            else:
+                print(f"⚠️  Could not delete existing client, will use it")
+
+        if existing:
+            client_id = existing['client_id']
+            print(f"✅ Test client already exists")
+            print(f"   Client ID: {client_id}")
+
+            if existing_secret:
+                print(f"   ✅ Using client secret from config file")
+                client_secret = existing_secret
+            else:
+                print(f"   ⚠️  Client secret not available")
+                print(f"   💡 Run with --recreate-client to generate a new secret")
+                client_secret = ""
+        else:
+            # Create new test client
+            try:
+                payload = {
+                    "name": name,
+                    "description": f"Test M2M client for accessing {api_identifier}",
+                    "app_type": "non_interactive",
+                    "grant_types": ["client_credentials"],
+                    "token_endpoint_auth_method": "client_secret_post"
+                }
+
+                client = self._make_request("POST", "/clients", data=payload)
+                existing = client
+                client_id = client["client_id"]
+                client_secret = client["client_secret"]
+
+                print(f"✅ Created new test M2M client")
+                print(f"   Client ID: {client_id}")
+                print(f"   Client Secret: {client_secret[:8]}...{client_secret[-4:]}")
+
+            except Exception as e:
+                print(f"❌ Failed to create test M2M client: {e}")
+                raise
+
+        # Grant access to the MCP API
+        print(f"🔑 Granting access to API: {api_identifier}...")
+
+        # Get API resource server
+        resource_servers = self._make_request("GET", "/resource-servers")
+        api = next((rs for rs in resource_servers if rs.get("identifier") == api_identifier), None)
+
+        if not api:
+            print(f"❌ API not found: {api_identifier}")
+            raise ValueError(f"API {api_identifier} not found")
+
+        api_id = api["id"]
+
+        # Get API scopes
+        scopes = [scope["value"] for scope in api.get("scopes", [])]
+        if not scopes:
+            # If no scopes defined, just grant access without specific scopes
+            scopes = []
+
+        # Create client grant
+        try:
+            grant_payload = {
+                "client_id": client_id,
+                "audience": api_identifier,
+                "scope": scopes
+            }
+
+            self._make_request("POST", "/client-grants", data=grant_payload)
+            print(f"✅ Granted API access")
+            print(f"   Scopes: {', '.join(scopes) if scopes else 'all'}")
+        except Exception as e:
+            # Check if grant already exists
+            if "already exists" in str(e).lower():
+                print("✅ API access already granted")
+            else:
+                raise
+
+        return existing, client_id, client_secret
+
     def list_connections(self) -> List[Dict[str, Any]]:
         """List all available connections."""
         print("\n🔍 Fetching available connections...")
@@ -463,6 +560,8 @@ def save_output_files(
     api_identifier: str,
     mgmt_client_id: str,
     mgmt_client_secret: str,
+    test_client_id: str,
+    test_client_secret: str,
     connection_id: str,
     output_dir: str = "."
 ) -> None:
@@ -482,6 +581,10 @@ def save_output_files(
         "management_api": {
             "client_id": mgmt_client_id,
             "client_secret": mgmt_client_secret
+        },
+        "test_client": {
+            "client_id": test_client_id,
+            "client_secret": test_client_secret
         },
         "connection_id": connection_id,
         "dcr_enabled": True,
@@ -699,7 +802,15 @@ Examples:
             existing_secret=config.get('client_secret'),
             recreate=args.recreate_client
         )
-        
+
+        # Create test M2M client for API access
+        test_client_config = config.get('test_client', {})
+        test_client, test_client_id, test_client_secret = setup.create_test_api_client(
+            api_identifier=config['api_identifier'],
+            existing_secret=test_client_config.get('client_secret'),
+            recreate=args.recreate_client
+        )
+
         connection_id = config.get('connection_id')
         
         if not connection_id:
@@ -731,6 +842,8 @@ Examples:
             api_identifier=config['api_identifier'],
             mgmt_client_id=client_id,
             mgmt_client_secret=client_secret,
+            test_client_id=test_client_id,
+            test_client_secret=test_client_secret,
             connection_id=connection_id,
             output_dir=args.output_dir
         )
@@ -746,7 +859,15 @@ Examples:
             }
             if client_secret:
                 config_to_save['client_secret'] = client_secret
-            
+
+            # Save test client credentials
+            if test_client_id or test_client_secret:
+                config_to_save['test_client'] = {}
+                if test_client_id:
+                    config_to_save['test_client']['client_id'] = test_client_id
+                if test_client_secret:
+                    config_to_save['test_client']['client_secret'] = test_client_secret
+
             config_mgr.save_config(config_to_save)
         
         print("\n" + "=" * 70)
