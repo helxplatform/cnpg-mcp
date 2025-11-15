@@ -18,28 +18,32 @@ This launches the MCP Inspector with the server running as a subprocess. Perfect
 
 ### Test HTTP Mode (Production)
 
+**Simple case (server with DCR enabled):**
+
 ```bash
-# Test HTTP with authentication
+# The inspector will auto-discover OAuth config and handle authentication
+./test-inspector.sh --transport http --url https://mcp-api.example.com
+```
+
+**Advanced (manual token for testing/debugging):**
+
+```bash
+# Test with token file
 ./test-inspector.sh --transport http \
-  --url http://localhost:3000 \
+  --url http://localhost:4204 \
   --token-file token.txt
 
 # Or with inline token
 ./test-inspector.sh --transport http \
-  --url http://localhost:3000 \
+  --url http://localhost:4204 \
   --token "eyJhbGciOiJSUzI1NiIs..."
-
-# Test remote endpoint
-./test-inspector.sh --transport http \
-  --url https://mcp-api.example.com \
-  --token-file ~/.mcp/token.txt
 ```
 
 ## Options
 
 ```
 -t, --transport <mode>    Transport mode: stdio (default) or http
--u, --url <url>          HTTP URL (default: http://localhost:3000)
+-u, --url <url>          HTTP URL (default: http://localhost:4204)
 --token <token>          JWT bearer token for HTTP mode
 --token-file <file>      File containing JWT bearer token
 -h, --help               Show help message
@@ -62,20 +66,41 @@ export MCP_HTTP_URL=https://mcp-api.example.com
 ./test-inspector.sh --transport stdio
 
 # Test HTTP mode without OIDC (development only!)
-./test-inspector.sh --transport http --url http://localhost:3000
+./test-inspector.sh --transport http --url http://localhost:4204
 ```
 
-### Production Testing
+### Production Testing (Simple Case)
+
+If your MCP server has DCR (Dynamic Client Registration) enabled, testing is straightforward:
+
+```bash
+# Test production server - authentication handled automatically
+./test-inspector.sh --transport http --url https://mcp-api.example.com
+
+# Test via port-forward
+kubectl port-forward -n default svc/cnpg-mcp 4204:4204
+./test-inspector.sh --transport http --url http://localhost:4204
+```
+
+The inspector will:
+1. Discover OAuth configuration from the server
+2. Register itself as a client (if needed)
+3. Obtain access tokens automatically
+
+### Advanced: Manual Token Testing
+
+**For debugging, service accounts, or IdPs without DCR support:**
+
+See `OIDC_SETUP.md` section "Advanced: Manual Token Management" for detailed instructions on obtaining tokens from various IdPs (Auth0, Keycloak, Azure AD, Okta).
 
 ```bash
 # 1. Obtain JWT token from your IdP
-# (Example using client credentials flow)
-TOKEN=$(curl -X POST https://auth.example.com/oauth/token \
+TOKEN=$(curl -X POST https://YOUR_DOMAIN.auth0.com/oauth/token \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=client_credentials" \
   -d "client_id=YOUR_CLIENT_ID" \
   -d "client_secret=YOUR_CLIENT_SECRET" \
-  -d "audience=mcp-api" \
+  -d "audience=YOUR_API_AUDIENCE" \
   | jq -r '.access_token')
 
 # 2. Save to file
@@ -85,25 +110,6 @@ echo "$TOKEN" > token.txt
 ./test-inspector.sh --transport http \
   --url https://mcp-api.example.com \
   --token-file token.txt
-```
-
-### Testing Different Environments
-
-```bash
-# Development
-./test-inspector.sh --transport http \
-  --url http://localhost:3000 \
-  --token-file dev-token.txt
-
-# Staging
-./test-inspector.sh --transport http \
-  --url https://mcp-staging.example.com \
-  --token-file staging-token.txt
-
-# Production
-./test-inspector.sh --transport http \
-  --url https://mcp.example.com \
-  --token-file prod-token.txt
 ```
 
 ## Using the MCP Inspector
@@ -213,7 +219,7 @@ cat token.txt | tr '.' '\n' | wc -l
 For HTTP mode:
 1. Ensure the server is running:
    ```bash
-   curl http://localhost:3000/health
+   curl http://localhost:4204/healthz
    ```
 
 2. Check server logs for errors
@@ -231,7 +237,7 @@ The new `test-inspector.sh` uses the official MCP Inspector instead of a custom 
 
 ### Old (Python-based):
 ```bash
-python test-inspector.py --url http://localhost:3000 \
+python test-inspector.py --url http://localhost:4204 \
   --token-file token.txt \
   call-tool --tool list_postgres_clusters --params '{}'
 ```
@@ -239,7 +245,7 @@ python test-inspector.py --url http://localhost:3000 \
 ### New (MCP Inspector):
 ```bash
 ./test-inspector.sh --transport http \
-  --url http://localhost:3000 \
+  --url http://localhost:4204 \
   --token-file token.txt
 ```
 

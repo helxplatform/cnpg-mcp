@@ -247,7 +247,7 @@ ingress:
   enabled: true
   className: nginx
   annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod
+    cert-manager.io/cluster-issuer: letsencrypt
   hosts:
     - host: mcp-api.example.com
       paths:

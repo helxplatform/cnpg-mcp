@@ -75,7 +75,7 @@ ingress:
   enabled: true
   className: nginx
   annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod
+    cert-manager.io/cluster-issuer: letsencrypt
   hosts:
     - host: mcp-api.example.com
       paths:
@@ -322,7 +322,7 @@ ingress:
   enabled: true
   className: nginx
   annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod
+    cert-manager.io/cluster-issuer: letsencrypt
     nginx.ingress.kubernetes.io/rate-limit: "100"
   hosts:
     - host: mcp.example.com
