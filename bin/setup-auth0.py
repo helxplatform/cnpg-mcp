@@ -493,10 +493,11 @@ def save_output_files(
         json.dump(config, f, indent=2)
     print(f"✅ Created {json_file}")
     
-    # Load make.env to get image repository
+    # Load make.env to get image repository and tag
     make_env = load_make_env(output_dir)
     registry = make_env.get('REGISTRY', 'your-registry.example.com')
     image_name = make_env.get('IMAGE_NAME', 'cnpg-mcp')
+    image_tag = make_env.get('TAG', '')
     image_repo = f"{registry}/{image_name}"
 
     # Extract hostname from audience URL for ingress
@@ -512,7 +513,7 @@ def save_output_files(
 image:
   repository: {image_repo}
   pullPolicy: IfNotPresent
-  # tag defaults to v{{{{.Chart.AppVersion}}}} (e.g., v2.0.0)
+  tag: "{image_tag}"  # From make.env (leave empty to use Chart.AppVersion)
 
 # Number of replicas
 replicaCount: 1
@@ -758,15 +759,15 @@ Examples:
         print()
         print("📋 Next Steps:")
         print()
-        # Get image repo from make.env if available
+        # Get image info from make.env if available
         make_env = load_make_env(args.output_dir)
         registry = make_env.get('REGISTRY', 'your-registry')
         image_name = make_env.get('IMAGE_NAME', 'cnpg-mcp')
+        tag = make_env.get('TAG', 'latest')
 
         print("1. Build and push your MCP server container image:")
-        print(f"   docker build -t {registry}/{image_name}:v2.0.0 .")
-        print(f"   docker push {registry}/{image_name}:v2.0.0")
-        print("   Or use: make build push")
+        print(f"   make build push")
+        print(f"   (builds {registry}/{image_name}:{tag})")
         print()
         print("2. Update the image repository in auth0-values.yaml")
         print()
