@@ -458,6 +458,118 @@ class Auth0MCPSetup:
 
         return existing, client_id, client_secret
 
+    def create_user_auth_client(
+        self,
+        api_identifier: str,
+        connection_id: Optional[str] = None,
+        name: str = "MCP User Auth Client",
+        existing_secret: Optional[str] = None,
+        recreate: bool = False
+    ) -> Tuple[Dict[str, Any], str]:
+        """
+        Create SPA/Native client for user authentication (Authorization Code + PKCE).
+
+        This client is used for user login flows like Claude Desktop would use.
+
+        Args:
+            api_identifier: API audience identifier
+            connection_id: Auth0 connection ID to enable for this client
+            name: Client name
+            existing_secret: Not used for SPA clients (PKCE, no secret)
+            recreate: Whether to recreate if exists
+        """
+        print(f"\n👤 Setting up User Authentication Client: {name}...")
+
+        # Check if client exists
+        all_clients = self._make_request("GET", "/clients")
+        existing = next((c for c in all_clients if c.get("name") == name), None)
+
+        if existing and recreate:
+            print(f"🔄 Recreating user auth client (--recreate-client specified)...")
+            if self.delete_client(existing['client_id']):
+                print(f"✅ Deleted existing client")
+                existing = None
+            else:
+                print(f"⚠️  Could not delete existing client, will use it")
+
+        if existing:
+            client_id = existing['client_id']
+            print(f"✅ User auth client already exists")
+            print(f"   Client ID: {client_id}")
+        else:
+            # Create new SPA client for user authentication
+            try:
+                payload = {
+                    "name": name,
+                    "description": f"User authentication client for {api_identifier} (Claude Desktop compatible)",
+                    "app_type": "spa",  # Single Page Application - no client secret needed
+                    "grant_types": [
+                        "authorization_code",  # For user login
+                        "refresh_token"        # For staying logged in
+                    ],
+                    "token_endpoint_auth_method": "none",  # PKCE instead of client secret
+                    "callbacks": [
+                        "http://localhost:8888/callback",  # For get-user-token.py
+                        "http://localhost:8889/callback",  # Alternate port
+                        "http://127.0.0.1:8888/callback",  # IPv4 explicit
+                    ],
+                    "web_origins": [
+                        "http://localhost:8888",
+                        "http://localhost:8889",
+                    ],
+                    "allowed_origins": [
+                        "http://localhost:8888",
+                        "http://localhost:8889",
+                    ],
+                    "oidc_conformant": True,  # Use modern OIDC flow
+                }
+
+                client = self._make_request("POST", "/clients", data=payload)
+                existing = client
+                client_id = client["client_id"]
+
+                print(f"✅ Created new user auth client (SPA)")
+                print(f"   Client ID: {client_id}")
+                print(f"   Type: Single Page Application (PKCE)")
+                print(f"   Callbacks: http://localhost:8888/callback")
+
+            except Exception as e:
+                print(f"❌ Failed to create user auth client: {e}")
+                raise
+
+        # Enable connection for this client (if tenant-level connection is provided)
+        if connection_id:
+            print(f"🔗 Enabling connection for user auth client...")
+            try:
+                # Get current client to check enabled_clients for the connection
+                connection = self._make_request("GET", f"/connections/{connection_id}")
+
+                # Check if connection is tenant-level
+                if connection.get("is_domain_connection", False):
+                    print(f"   ✅ Connection is tenant-level (available to all clients)")
+                else:
+                    # For app-level connections, need to explicitly enable
+                    enabled_clients = connection.get("enabled_clients", [])
+
+                    if client_id not in enabled_clients:
+                        enabled_clients.append(client_id)
+
+                        # Update connection to include this client
+                        self._make_request(
+                            "PATCH",
+                            f"/connections/{connection_id}",
+                            data={"enabled_clients": enabled_clients}
+                        )
+                        print(f"   ✅ Enabled connection for client")
+                    else:
+                        print(f"   ✅ Connection already enabled for client")
+
+            except Exception as e:
+                print(f"   ⚠️  Failed to enable connection: {e}")
+                print(f"   You may need to manually enable the connection in Auth0 dashboard")
+
+        return existing, client_id
+
     def list_connections(self) -> List[Dict[str, Any]]:
         """List all available connections."""
         print("\n🔍 Fetching available connections...")
@@ -562,17 +674,18 @@ def save_output_files(
     mgmt_client_secret: str,
     test_client_id: str,
     test_client_secret: str,
+    user_auth_client_id: str,
     connection_id: str,
     output_dir: str = "."
 ) -> None:
     """Save configuration files."""
     print("\n💾 Saving configuration files...")
-    
+
     if not mgmt_client_secret:
         print("⚠️  Warning: Management client secret not available")
         print("   Configuration will be incomplete")
         print("   Run with --recreate-client to generate a new secret")
-    
+
     # auth0-config.json - single source of truth
     config = {
         "domain": domain,
@@ -585,6 +698,9 @@ def save_output_files(
         "test_client": {
             "client_id": test_client_id,
             "client_secret": test_client_secret
+        },
+        "user_auth_client": {
+            "client_id": user_auth_client_id
         },
         "connection_id": connection_id,
         "dcr_enabled": True,
@@ -836,7 +952,16 @@ Examples:
         
         if not setup.promote_connection(connection_id):
             print("⚠️  Warning: Connection promotion failed, but continuing...")
-        
+
+        # Create user auth client for Authorization Code Flow + PKCE
+        # Must be done AFTER connection is promoted
+        user_auth_config = config.get('user_auth_client', {})
+        user_auth_client, user_auth_client_id = setup.create_user_auth_client(
+            api_identifier=config['api_identifier'],
+            connection_id=connection_id,
+            recreate=args.recreate_client
+        )
+
         save_output_files(
             domain=config['domain'],
             api_identifier=config['api_identifier'],
@@ -844,6 +969,7 @@ Examples:
             mgmt_client_secret=client_secret,
             test_client_id=test_client_id,
             test_client_secret=test_client_secret,
+            user_auth_client_id=user_auth_client_id,
             connection_id=connection_id,
             output_dir=args.output_dir
         )
