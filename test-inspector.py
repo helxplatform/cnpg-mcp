@@ -160,14 +160,17 @@ Examples:
   # Test stdio transport (local development)
   ./test-inspector.py
 
-  # Test HTTP transport (auto-obtains token from auth0-config.json)
+  # Test HTTP transport with UI (auto-obtains token, requires manual header setup)
   ./test-inspector.py --transport http --url https://cnpg-mcp.wat.im
 
-  # Test HTTP transport with manual token
-  ./test-inspector.py --transport http --url https://cnpg-mcp.wat.im --token "eyJ..."
+  # Test HTTP transport with CLI mode (NO COPY-PASTE! 🎉)
+  ./test-inspector.py --transport http --url https://cnpg-mcp.wat.im --cli
 
-  # Test HTTP transport with token from file
-  ./test-inspector.py --transport http --url https://cnpg-mcp.wat.im --token-file token.txt
+  # CLI mode with specific method
+  ./test-inspector.py --transport http --url https://cnpg-mcp.wat.im --cli --method tools/call
+
+  # Test HTTP transport with manual token
+  ./test-inspector.py --transport http --url https://cnpg-mcp.wat.im --token "eyJ..." --cli
 
 Environment Variables:
   MCP_HTTP_URL    Default HTTP URL (default: http://localhost:4204)
@@ -175,8 +178,9 @@ Environment Variables:
 Notes:
   - Requires npx and @modelcontextprotocol/inspector
   - For stdio mode, the server runs as a subprocess
-  - For HTTP mode, automatically checks for auth0-config.json
-  - If auth0-config.json exists, attempts to obtain token automatically
+  - For HTTP mode with --cli: automatic auth header injection (no copy-paste!)
+  - For HTTP mode without --cli: web UI (requires manual header configuration)
+  - Automatically checks for auth0-config.json and obtains token
   - Manual token via --token or --token-file overrides automatic token
 """
     )
@@ -204,6 +208,16 @@ Notes:
         '--auth0-config',
         default='auth0-config.json',
         help='Path to auth0-config.json (default: ./auth0-config.json)'
+    )
+    parser.add_argument(
+        '--cli',
+        action='store_true',
+        help='Use Inspector CLI mode (no copy-paste needed for auth!)'
+    )
+    parser.add_argument(
+        '--method',
+        default='tools/list',
+        help='CLI method to call (default: tools/list)'
     )
 
     args = parser.parse_args()
@@ -243,28 +257,54 @@ Notes:
 
         token_source = f"file: {args.token_file}"
 
-    # Priority 3: Auto-obtain from auth0-config.json (only for HTTP mode)
+    # Priority 3: Auto-obtain from auth0-config.json or user-token.txt (only for HTTP mode)
     elif args.transport == 'http':
-        auth0_config = load_auth0_config(args.auth0_config)
+        # For CLI mode, prefer user token (has openid scope)
+        # For UI mode, M2M token is fine since user will configure headers manually
 
-        if auth0_config:
-            print(Colors.green(f"✅ Found {args.auth0_config}"))
-            print()
-            token = get_token_from_auth0(auth0_config)
-            if token:
-                token_source = f"auto-obtained from {args.auth0_config}"
+        if args.cli:
+            # CLI mode requires user token with openid scope
+            user_token_file = Path("user-token.txt")
+
+            if user_token_file.exists():
+                token = user_token_file.read_text().strip()
+                token_source = "user-token.txt (user authentication)"
+                print(Colors.green(f"✅ Using user token from {user_token_file}"))
+                print()
             else:
+                print(Colors.yellow(f"⚠️  No user token found"))
                 print()
-                print(Colors.yellow("⚠️  Could not automatically obtain token"))
+                print("CLI mode requires user authentication (with 'openid' scope).")
                 print()
+                print("To get a user token, run:")
+                print("  ./get-user-token.py")
+                print()
+                print("Then try again:")
+                print(f"  {' '.join(sys.argv)}")
+                print()
+                sys.exit(1)
         else:
-            print(Colors.yellow(f"⚠️  No {args.auth0_config} found"))
-            print()
-            print("To enable automatic token retrieval:")
-            print(f"1. Run: python bin/setup-auth0.py --token YOUR_AUTH0_MGMT_TOKEN")
-            print(f"2. This will create {args.auth0_config} with client credentials")
-            print(f"3. The inspector will automatically obtain tokens")
-            print()
+            # UI mode - try to get M2M token (user will configure headers manually)
+            auth0_config = load_auth0_config(args.auth0_config)
+
+            if auth0_config:
+                print(Colors.green(f"✅ Found {args.auth0_config}"))
+                print()
+                token = get_token_from_auth0(auth0_config)
+                if token:
+                    token_source = f"auto-obtained from {args.auth0_config}"
+                else:
+                    print()
+                    print(Colors.yellow("⚠️  Could not automatically obtain token"))
+                    print()
+            else:
+                print(Colors.yellow(f"⚠️  No {args.auth0_config} found"))
+                print()
+                print("To enable automatic token retrieval:")
+                print(f"1. Run: python bin/setup-auth0.py --token YOUR_AUTH0_MGMT_TOKEN")
+                print(f"2. This will create {args.auth0_config} with client credentials")
+                print(f"3. The inspector will automatically obtain tokens")
+                print()
 
     # Run inspector based on transport mode
     if args.transport == 'stdio':
@@ -313,33 +353,63 @@ Notes:
         print(f"{Colors.blue('Connecting to:')} {mcp_endpoint}")
         print()
 
-        # Save token to file for manual use
-        if token:
-            token_file = Path("inspector-token.txt")
-            token_file.write_text(token)
-            print(Colors.green(f"✅ Token saved to: {token_file}"))
-            print()
-            print(Colors.yellow("NOTE: MCP Inspector HTTP transport doesn't support CLI authentication."))
-            print()
-            print("To connect with authentication:")
-            print(f"1. The inspector will open in your browser")
-            print(f"2. In the connection dialog, enter URL: {mcp_endpoint}")
-            print(f"3. Click 'Advanced' or 'Headers'")
-            print(f"4. Add header:")
-            print(f"   - Name: Authorization")
-            print(f"   - Value: Bearer {token[:20]}...{token[-20:]}")
-            print()
-            print("OR copy the full token from inspector-token.txt")
-            print()
-            input("Press Enter to launch inspector...")
+        # CLI mode - automatic header injection!
+        if args.cli:
+            print(Colors.green("Using CLI mode with automatic authentication"))
             print()
 
-        # Build inspector command without auth (user will add manually)
-        cmd = [
-            'npx', '@modelcontextprotocol/inspector',
-            '--transport', 'http',
-            '--url', mcp_endpoint
-        ]
+            if not token:
+                print(Colors.red("Error: CLI mode requires authentication token"))
+                print("Run with --token or --token-file, or use stdio transport")
+                sys.exit(1)
+
+            # Build inspector command for CLI mode with header
+            cmd = [
+                'npx', '@modelcontextprotocol/inspector',
+                '--cli',
+                mcp_endpoint,
+                '--transport', 'http',
+                '--method', args.method,
+                '--header', f'Authorization: Bearer {token}'
+            ]
+
+            print(Colors.blue(f"Method: {args.method}"))
+            print()
+            print(Colors.green("No copy-paste needed! Header injected automatically."))
+            print()
+
+        # UI mode - requires manual header configuration
+        else:
+            # Save token to file for manual use
+            if token:
+                token_file = Path("inspector-token.txt")
+                token_file.write_text(token)
+                print(Colors.green(f"✅ Token saved to: {token_file}"))
+                print()
+                print(Colors.yellow("NOTE: Inspector UI mode requires manual header configuration."))
+                print()
+                print("To connect with authentication:")
+                print(f"1. The inspector will open in your browser")
+                print(f"2. In the connection dialog, enter URL: {mcp_endpoint}")
+                print(f"3. Click 'Advanced' or 'Headers'")
+                print(f"4. Add header:")
+                print(f"   - Name: Authorization")
+                print(f"   - Value: Bearer {token[:20]}...{token[-20:]}")
+                print()
+                print("OR copy the full token from inspector-token.txt")
+                print()
+                print(Colors.blue("💡 TIP: Use --cli flag to skip copy-paste!"))
+                print(f"   ./test-inspector.py --transport http --url {args.url} --cli")
+                print()
+                input("Press Enter to launch inspector...")
+                print()
+
+            # Build inspector command for UI mode (no auth injection)
+            cmd = [
+                'npx', '@modelcontextprotocol/inspector',
+                '--transport', 'http',
+                '--url', mcp_endpoint
+            ]
 
         try:
             subprocess.run(cmd, check=True)
