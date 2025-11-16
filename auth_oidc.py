@@ -176,6 +176,16 @@ class OIDCAuthProvider:
         # Don't require scope by default - M2M tokens typically don't have 'openid' scope
         self.required_scope = required_scope or config.get("scope") or os.getenv("OIDC_SCOPE")
 
+        # Debug: Show scope configuration sources
+        scope_source = "not set (M2M mode)"
+        if required_scope:
+            scope_source = f"explicit parameter: '{required_scope}'"
+        elif config.get("scope"):
+            scope_source = f"config file: '{config.get('scope')}'"
+        elif os.getenv("OIDC_SCOPE"):
+            scope_source = f"environment: '{os.getenv('OIDC_SCOPE')}'"
+        logger.info(f"🔧 Required scope configuration: {scope_source} -> final value: {self.required_scope}")
+
         # Validate required configuration
         if not self.issuer:
             raise ValueError(
@@ -299,10 +309,16 @@ class OIDCAuthProvider:
                 else:
                     scopes = scope
 
+                logger.info(f"🔍 Scope validation: required='{self.required_scope}', token_scopes={scopes}")
+
                 if self.required_scope not in scopes:
                     raise ValueError(
-                        f"Required scope '{self.required_scope}' not found in token"
+                        f"Required scope '{self.required_scope}' not found in token. Token has: {scopes}"
                     )
+            else:
+                # Log when no scope is required
+                token_scopes = claims.get('scope', '')
+                logger.info(f"✓ No scope required (M2M mode). Token scopes: {token_scopes}")
 
             logger.debug(f"Token verified successfully for subject: {claims.get('sub')}")
             return dict(claims)
