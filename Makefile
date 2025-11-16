@@ -51,11 +51,7 @@ config-show: make.env ## Show current configuration
 .PHONY: build
 build: make.env ## Build container image
 	@echo "Building container image: $(IMAGE_FULL)"
-	$(CONTAINER_TOOL) build \
-		--tag $(IMAGE_FULL) \
-		--platform $(PLATFORM) \
-		--file Dockerfile \
-		.
+	$(CONTAINER_TOOL) build --tag $(IMAGE_FULL) --platform $(PLATFORM) --file Dockerfile .
 	@echo "✓ Built: $(IMAGE_FULL)"
 
 .PHONY: build-no-cache

@@ -313,17 +313,33 @@ Notes:
         print(f"{Colors.blue('Connecting to:')} {mcp_endpoint}")
         print()
 
-        # Build inspector command
+        # Save token to file for manual use
+        if token:
+            token_file = Path("inspector-token.txt")
+            token_file.write_text(token)
+            print(Colors.green(f"✅ Token saved to: {token_file}"))
+            print()
+            print(Colors.yellow("NOTE: MCP Inspector HTTP transport doesn't support CLI authentication."))
+            print()
+            print("To connect with authentication:")
+            print(f"1. The inspector will open in your browser")
+            print(f"2. In the connection dialog, enter URL: {mcp_endpoint}")
+            print(f"3. Click 'Advanced' or 'Headers'")
+            print(f"4. Add header:")
+            print(f"   - Name: Authorization")
+            print(f"   - Value: Bearer {token[:20]}...{token[-20:]}")
+            print()
+            print("OR copy the full token from inspector-token.txt")
+            print()
+            input("Press Enter to launch inspector...")
+            print()
+
+        # Build inspector command without auth (user will add manually)
         cmd = [
             'npx', '@modelcontextprotocol/inspector',
             '--transport', 'http',
             '--url', mcp_endpoint
         ]
-
-        if token:
-            print(Colors.blue("Passing Authorization header through Inspector proxy..."))
-            print()
-            cmd.extend(['--header', f'Authorization: Bearer {token}'])
 
         try:
             subprocess.run(cmd, check=True)

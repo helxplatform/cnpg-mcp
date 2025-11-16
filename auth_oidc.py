@@ -173,7 +173,8 @@ class OIDCAuthProvider:
         self.audience = audience or config.get("audience") or os.getenv("OIDC_AUDIENCE")
         self.jwks_uri = jwks_uri or config.get("jwks_uri") or os.getenv("OIDC_JWKS_URI")
         self.dcr_proxy_url = dcr_proxy_url or config.get("dcr_proxy_url") or os.getenv("DCR_PROXY_URL")
-        self.required_scope = required_scope or config.get("scope") or os.getenv("OIDC_SCOPE", "openid")
+        # Don't require scope by default - M2M tokens typically don't have 'openid' scope
+        self.required_scope = required_scope or config.get("scope") or os.getenv("OIDC_SCOPE")
 
         # Validate required configuration
         if not self.issuer:
@@ -269,10 +270,13 @@ class OIDCAuthProvider:
             # Validate standard claims
             claims.validate()
 
-            # Verify issuer
-            if claims.get('iss') != self.issuer:
+            # Verify issuer (normalize trailing slashes)
+            token_issuer = claims.get('iss', '').rstrip('/')
+            expected_issuer = self.issuer.rstrip('/')
+
+            if token_issuer != expected_issuer:
                 raise ValueError(
-                    f"Invalid issuer. Expected '{self.issuer}', got '{claims.get('iss')}'"
+                    f"Invalid issuer. Expected '{expected_issuer}', got '{token_issuer}'"
                 )
 
             # Verify audience
@@ -373,12 +377,20 @@ class OIDCAuthProvider:
                 else f"{self.issuer}/protocol/openid-connect/auth"
             )
 
+            # Build scopes list dynamically
+            scopes_supported = []
+            if self.required_scope:
+                scopes_supported.append(self.required_scope)
+            # Always include openid for user flows even if not required for M2M
+            if "openid" not in scopes_supported:
+                scopes_supported.append("openid")
+
             metadata = {
                 "issuer": self.issuer,
                 "authorization_endpoint": authorization_endpoint,
                 "token_endpoint": token_endpoint,
                 "jwks_uri": self.jwks_uri,
-                "scopes_supported": [self.required_scope, "openid"],
+                "scopes_supported": scopes_supported,
                 "response_types_supported": ["code"],
                 "grant_types_supported": ["authorization_code", "client_credentials"],
                 "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
