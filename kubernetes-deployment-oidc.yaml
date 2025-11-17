@@ -1,0 +1,298 @@
+# CloudNativePG MCP Server - Kubernetes Deployment with OIDC Authentication
+# This manifest deploys the MCP server in HTTP mode with OIDC/OAuth2 authentication
+#
+# Prerequisites:
+# 1. RBAC setup (run: python rbac/bind_cnpg_role.py or kubectl apply -f rbac.yaml)
+# 2. OIDC provider configured (see OIDC_SETUP.md)
+# 3. Container image built and pushed to registry
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cnpg-mcp-oidc-config
+  namespace: default
+data:
+  # REQUIRED: OIDC Issuer URL
+  # This is the base URL of your OIDC/OAuth2 identity provider
+  # Examples:
+  #   Auth0: https://your-tenant.auth0.com
+  #   Keycloak: https://keycloak.example.com/realms/your-realm
+  #   Okta: https://your-org.okta.com/oauth2/default
+  #   Azure AD: https://login.microsoftonline.com/{tenant-id}/v2.0
+  OIDC_ISSUER: "https://auth.example.com"
+
+  # REQUIRED: Expected audience claim in JWT tokens
+  # This should match what your IdP issues in the 'aud' claim
+  # Common formats:
+  #   - Simple identifier: mcp-api
+  #   - URI format: https://api.example.com/mcp
+  #   - Client ID (for some IdPs): your-client-id.apps.googleusercontent.com
+  OIDC_AUDIENCE: "mcp-api"
+
+  # OPTIONAL: Override JWKS URI (auto-discovered by default)
+  # Only set if your IdP doesn't support OIDC discovery or uses non-standard endpoints
+  # OIDC_JWKS_URI: "https://auth.example.com/.well-known/jwks.json"
+
+  # OPTIONAL: DCR (Dynamic Client Registration) proxy URL
+  # Use this if your IdP doesn't support DCR natively (RFC 7591)
+  # The proxy translates standard DCR requests to your IdP's API
+  # DCR_PROXY_URL: "https://dcr-proxy.example.com/register"
+
+  # OPTIONAL: Required OAuth2 scope (default: openid)
+  # The server will verify tokens contain this scope
+  # OIDC_SCOPE: "openid"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cnpg-mcp-server
+  namespace: default
+  labels:
+    app: cnpg-mcp-server
+    component: api
+spec:
+  replicas: 2  # Multiple replicas for HA
+  selector:
+    matchLabels:
+      app: cnpg-mcp-server
+  template:
+    metadata:
+      labels:
+        app: cnpg-mcp-server
+        component: api
+    spec:
+      serviceAccountName: cnpg-mcp-server
+
+      # Security context
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+
+      containers:
+      - name: mcp-server
+        image: your-registry.example.com/cnpg-mcp:latest
+        imagePullPolicy: Always
+
+        ports:
+        - containerPort: 4204
+          name: http
+          protocol: TCP
+
+        # Load OIDC configuration from ConfigMap
+        envFrom:
+        - configMapRef:
+            name: cnpg-mcp-oidc-config
+
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+
+        # Resource limits
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+
+        # Health checks
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 4204
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 4204
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+
+        # Security context for container
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false  # Set to true if you mount writable volumes
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cnpg-mcp-server
+  namespace: default
+  labels:
+    app: cnpg-mcp-server
+spec:
+  type: ClusterIP
+  selector:
+    app: cnpg-mcp-server
+  ports:
+  - port: 4204
+    targetPort: 4204
+    protocol: TCP
+    name: http
+  sessionAffinity: None
+
+---
+# Ingress with TLS (requires cert-manager or manually created TLS secret)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cnpg-mcp-server
+  namespace: default
+  annotations:
+    # Certificate management (adjust for your cert-manager setup)
+    cert-manager.io/cluster-issuer: "letsencrypt"
+
+    # Nginx ingress specific (adjust for your ingress controller)
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+
+    # Security headers
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Frame-Options: DENY";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      more_set_headers "X-XSS-Protection: 1; mode=block";
+      more_set_headers "Referrer-Policy: strict-origin-when-cross-origin";
+
+    # Request size limits (adjust as needed)
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+
+    # Timeouts for long-running operations
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+
+spec:
+  ingressClassName: nginx  # Adjust for your ingress controller
+  tls:
+  - hosts:
+    - mcp-api.example.com
+    secretName: cnpg-mcp-tls  # TLS certificate secret
+  rules:
+  - host: mcp-api.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: cnpg-mcp-server
+            port:
+              number: 3000
+
+---
+# HorizontalPodAutoscaler for automatic scaling based on CPU/memory
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: cnpg-mcp-server
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cnpg-mcp-server
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 30
+      - type: Pods
+        value: 2
+        periodSeconds: 30
+
+---
+# PodDisruptionBudget for HA during cluster operations
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cnpg-mcp-server
+  namespace: default
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: cnpg-mcp-server
+
+---
+# NetworkPolicy to restrict traffic (optional, requires network policy support)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cnpg-mcp-server
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: cnpg-mcp-server
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow traffic from ingress controller
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx  # Adjust for your ingress namespace
+    ports:
+    - protocol: TCP
+      port: 4204
+  egress:
+  # Allow DNS
+  - to:
+    - namespaceSelector: {}
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+  # Allow Kubernetes API
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: TCP
+      port: 443
+  # Allow OIDC provider
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: TCP
+      port: 443

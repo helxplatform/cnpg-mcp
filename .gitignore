@@ -8,6 +8,8 @@ output
 */__pycache__/*
 *.pyc
 auth
+token.txt
+*.tgz
 
 # OS generated files #
 ######################
@@ -17,6 +19,8 @@ auth
 
 # Local build config
 make.env
+auth0-config.json
+auth0-values.yaml
 
 # Python packaging
 ######################

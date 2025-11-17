@@ -1,0 +1,124 @@
+# Default values for cnpg-mcp.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 1
+
+image:
+  repository: your-registry.example.com/cnpg-mcp
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: "cnpg-mcp"
+
+podAnnotations: {}
+
+podSecurityContext: {}
+  # fsGroup: 2000
+
+securityContext: {}
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+  # runAsUser: 1000
+
+service:
+  type: ClusterIP
+  port: 4204
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # kubernetes.io/tls-acme: "true"
+  hosts:
+    - host: chart-example.local
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls: []
+  #  - secretName: chart-example-tls
+  #    hosts:
+  #      - chart-example.local
+
+resources: {}
+  # We usually recommend not to specify default resources and to leave this as a conscious
+  # choice for the user. This also increases chances charts run on environments with little
+  # resources, such as Minikube. If you do want to specify resources, uncomment the following
+  # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+  # limits:
+  #   cpu: 100m
+  #   memory: 128Mi
+  # requests:
+  #   cpu: 100m
+  #   memory: 128Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 100
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# OIDC/OAuth2 Authentication Configuration
+# REQUIRED for production HTTP mode deployment
+oidc:
+  # REQUIRED: OIDC Issuer URL (base URL of your identity provider)
+  # Examples:
+  #   Auth0: https://your-tenant.auth0.com
+  #   Keycloak: https://keycloak.example.com/realms/your-realm
+  #   Okta: https://your-org.okta.com/oauth2/default
+  #   Azure AD: https://login.microsoftonline.com/{tenant-id}/v2.0
+  issuer: "https://auth.example.com"
+
+  # REQUIRED: Expected audience claim in JWT tokens
+  # This should match what your IdP issues in the 'aud' claim
+  audience: "mcp-api"
+
+  # OPTIONAL: Override JWKS URI (auto-discovered from issuer by default)
+  # Only set if your IdP doesn't support OIDC discovery
+  # jwksUri: ""
+
+  # OPTIONAL: DCR (Dynamic Client Registration) proxy URL
+  # Use if your IdP doesn't support RFC 7591 DCR natively
+  # dcrProxyUrl: ""
+
+  # OPTIONAL: Required OAuth2 scope (default: openid)
+  # scope: "openid"
+
+  # OPTIONAL: Use existing Kubernetes Secret instead of ConfigMap
+  # If specified, the deployment will load OIDC config from this secret
+  # instead of creating a ConfigMap. Useful for external secret management.
+  # The secret must contain a YAML file with the OIDC configuration.
+  #
+  # Example secret creation:
+  #   kubectl create secret generic my-oidc-secret \
+  #     --from-file=oidc.yaml=./oidc-config.yaml
+  #
+  # Or use the provided script with auth0-config.json:
+  #   python bin/create_secrets.py --namespace <namespace>
+  #
+  # existingSecret:
+  #   name: "my-oidc-secret"        # Name of the existing secret
+  #   configKey: "oidc.yaml"        # Key in secret containing YAML config (default: oidc.yaml)
