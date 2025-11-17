@@ -13,6 +13,7 @@ Transport Modes:
 import asyncio
 import json
 import sys
+import os
 import argparse
 import secrets
 import string
@@ -2074,40 +2075,127 @@ async def run_stdio_transport():
     await mcp.run_stdio_async()
 
 
-async def run_http_transport(host: str = "0.0.0.0", port: int = 3000):
+async def run_http_transport(host: str = "0.0.0.0", port: int = 4204):
     """
-    Run the MCP server using HTTP/SSE transport.
+    Run the MCP server using HTTP transport (Streamable HTTP) with OIDC authentication.
 
     This mode allows multiple clients to connect remotely and is suitable
-    for team environments and production deployments.
+    for team environments and production deployments. The MCP endpoint is
+    available at /mcp.
 
-    FastMCP makes HTTP/SSE transport simple with run_sse_async()!
+    OIDC authentication is enforced via environment variables:
+        OIDC_ISSUER: OIDC provider URL (required)
+        OIDC_AUDIENCE: Expected JWT audience (required)
+        OIDC_JWKS_URI: Optional JWKS URI override
+        DCR_PROXY_URL: Optional DCR proxy for client registration
+        OIDC_SCOPE: Required scope (default: openid)
     """
-    print(f"Starting CloudNativePG MCP server with HTTP/SSE transport on {host}:{port}...", file=sys.stderr)
+    print(f"Starting CloudNativePG MCP server with HTTP transport on {host}:{port}...", file=sys.stderr)
     print(f"FastMCP server initialized with name: cloudnative-pg", file=sys.stderr)
+    print(f"MCP endpoint available at: http://{host}:{port}/mcp", file=sys.stderr)
 
-    # FastMCP handles HTTP/SSE transport automatically
-    # This will create a server that can handle multiple concurrent clients
-    await mcp.run_sse_async(host=host, port=port)
+    # Initialize OIDC authentication if configured
+    auth_provider = None
+    middleware = []
 
-    # FastMCP automatically provides:
-    # - GET /sse - Server-Sent Events endpoint for bidirectional communication
-    # - POST /message - Endpoint for client messages
-    # - Built-in authentication support (via mcp.auth)
-    # - CORS handling
-    # - Error handling
-    #
-    # To add authentication:
-    # @mcp.auth
-    # async def authenticate(request):
-    #     # Verify API key, JWT, etc.
-    #     return True  # or raise an exception
-    #
-    # For production:
-    # - Run behind a reverse proxy (nginx, traefik) for TLS
-    # - Set FASTMCP_AUTH_SECRET environment variable
-    # - Consider rate limiting
-    # - Enable audit logging
+    # Check if OIDC should be enabled (config file or env var)
+    import os
+    from pathlib import Path
+    oidc_config_exists = Path("/etc/mcp/oidc.yaml").exists() or os.getenv("OIDC_ISSUER")
+
+    if oidc_config_exists:
+        try:
+            from auth_oidc import OIDCAuthProvider, OIDCAuthMiddleware
+            from starlette.middleware import Middleware
+
+            print("Initializing OIDC authentication...", file=sys.stderr)
+            # OIDCAuthProvider will check config file first, then env vars
+            auth_provider = OIDCAuthProvider()
+
+            # Create middleware using Starlette's Middleware wrapper
+            # This is the format Starlette expects when building middleware stack
+            middleware.append(
+                Middleware(
+                    OIDCAuthMiddleware,
+                    auth_provider=auth_provider,
+                    exclude_paths=["/healthz", "/readyz", "/.well-known/"]
+                )
+            )
+
+            print(f"✓ OIDC authentication enabled", file=sys.stderr)
+            print(f"  Issuer: {auth_provider.issuer}", file=sys.stderr)
+            print(f"  Audience: {auth_provider.audience}", file=sys.stderr)
+
+        except Exception as e:
+            print(f"ERROR: Failed to initialize OIDC authentication: {e}", file=sys.stderr)
+            print("Server will NOT start without valid OIDC configuration.", file=sys.stderr)
+            raise
+    else:
+        print("WARNING: OIDC authentication NOT configured!", file=sys.stderr)
+        print("Provide OIDC config via:", file=sys.stderr)
+        print("  1. Config file at /etc/mcp/oidc.yaml (recommended for Kubernetes)", file=sys.stderr)
+        print("  2. Environment variables: OIDC_ISSUER and OIDC_AUDIENCE", file=sys.stderr)
+        print("Running in INSECURE mode (development only).", file=sys.stderr)
+
+    # Get Starlette app without middleware
+    # Use "http" transport (Streamable HTTP) with /mcp endpoint
+    # This is the recommended transport for production deployments
+    app = mcp.http_app(
+        transport="http",
+        path="/mcp"
+    )
+
+    # Add health check endpoints (unauthenticated) - must be added before wrapping with auth
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    async def liveness_check(request):
+        """Liveness probe - checks if server is running."""
+        return JSONResponse({"status": "alive", "service": "cnpg-mcp-server"})
+
+    async def readiness_check(request):
+        """Readiness probe - checks if server is ready to accept requests."""
+        # TODO: Add checks for Kubernetes API connectivity if needed
+        return JSONResponse({"status": "ready", "service": "cnpg-mcp-server"})
+
+    app.routes.insert(0, Route("/healthz", liveness_check, methods=["GET"]))
+    app.routes.insert(0, Route("/readyz", readiness_check, methods=["GET"]))
+
+    # Add OAuth metadata routes if auth provider is configured
+    if auth_provider:
+        metadata_routes = auth_provider.get_metadata_routes()
+        for route in metadata_routes:
+            app.routes.append(route)
+
+    # Wrap the app with OIDC middleware if configured
+    # This must be done AFTER adding all routes
+    if middleware:
+        from starlette.middleware import Middleware
+        from starlette.applications import Starlette
+
+        # Extract the OIDC middleware config
+        oidc_middleware_config = middleware[0]
+
+        # Apply middleware by wrapping the app
+        app.add_middleware(
+            oidc_middleware_config.cls,
+            **oidc_middleware_config.kwargs
+        )
+
+    # Run with uvicorn
+    import uvicorn
+
+    config = uvicorn.Config(
+        app,
+        host=host,
+        port=port,
+        log_level="info",
+        access_log=True,
+        server_header=False,
+    )
+
+    server = uvicorn.Server(config)
+    await server.serve()
 
 
 # ============================================================================
@@ -2150,8 +2238,8 @@ For more information, see README.md
     parser.add_argument(
         "--port",
         type=int,
-        default=3000,
-        help="Port to listen on (HTTP transport only, default: 3000)"
+        default=4204,
+        help="Port to listen on (HTTP transport only, default: 4204)"
     )
     
     return parser.parse_args()

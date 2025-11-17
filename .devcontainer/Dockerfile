@@ -11,6 +11,15 @@ RUN install -m 0755 -d /etc/apt/keyrings; \
   apt-get update && apt-get install -y --no-install-recommends kubectl; \
   kubectl completion bash > /etc/bash_completion.d/kubectl
 
+# helm (official APT repo via Buildkite)
+RUN install -m 0755 -d /etc/apt/keyrings && \
+  curl -fsSL https://packages.buildkite.com/helm-linux/helm-debian/gpgkey \
+    | gpg --dearmor -o /etc/apt/keyrings/helm.gpg && \
+  echo "deb [signed-by=/etc/apt/keyrings/helm.gpg] https://packages.buildkite.com/helm-linux/helm-debian/any/ any main" \
+    > /etc/apt/sources.list.d/helm-stable-debian.list && \
+  apt-get update && apt-get install -y --no-install-recommends helm && \
+  helm completion bash > /etc/bash_completion.d/helm
+
 RUN KUBELOGIN_VERSION=v1.28.1 && \
   curl -LO "https://github.com/int128/kubelogin/releases/download/${KUBELOGIN_VERSION}/kubelogin_linux_amd64.zip" && \
   unzip kubelogin_linux_amd64.zip && \

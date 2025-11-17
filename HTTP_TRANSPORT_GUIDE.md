@@ -273,7 +273,7 @@ kind: Ingress
 metadata:
   name: cnpg-mcp-ingress
   annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod
+    cert-manager.io/cluster-issuer: letsencrypt
 spec:
   tls:
   - hosts:
