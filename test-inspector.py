@@ -12,6 +12,7 @@ import json
 import argparse
 import subprocess
 import shutil
+import time
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -160,17 +161,27 @@ Examples:
   # Test stdio transport (local development)
   ./test-inspector.py
 
-  # Test HTTP transport with UI (auto-obtains token, requires manual header setup)
-  ./test-inspector.py --transport http --url https://cnpg-mcp.wat.im
+  # Test HTTP with auth proxy (EASIEST! Full UI, zero copy-paste! 🎉)
+  ./test-inspector.py --transport http --url https://cnpg-mcp.wat.im --use-proxy
 
-  # Test HTTP transport with CLI mode (NO COPY-PASTE! 🎉)
+  # Test HTTP with kubectl port-forward (for testing in-cluster deployment)
+  ./test-inspector.py --transport http --port-forward --namespace claude
+
+  # Test HTTP direct with CLI mode (text output, automatic auth header)
   ./test-inspector.py --transport http --url https://cnpg-mcp.wat.im --cli
 
-  # CLI mode with specific method
-  ./test-inspector.py --transport http --url https://cnpg-mcp.wat.im --cli --method tools/call
+  # Test HTTP direct with UI mode (requires manual header setup)
+  ./test-inspector.py --transport http --url https://cnpg-mcp.wat.im
 
-  # Test HTTP transport with manual token
-  ./test-inspector.py --transport http --url https://cnpg-mcp.wat.im --token "eyJ..." --cli
+  # Custom proxy port
+  ./test-inspector.py --transport http --url https://cnpg-mcp.wat.im --use-proxy --proxy-port 9000
+
+Testing Modes:
+  stdio           - Local server as subprocess (no auth)
+  http direct     - Connect to remote HTTPS server (manual auth in UI)
+  http --use-proxy - Auto-start auth proxy (ZERO copy-paste, full UI!)
+  http --port-forward - Use kubectl to access in-cluster service
+  http --cli      - CLI mode with automatic auth header
 
 Environment Variables:
   MCP_HTTP_URL    Default HTTP URL (default: http://localhost:4204)
@@ -178,10 +189,11 @@ Environment Variables:
 Notes:
   - Requires npx and @modelcontextprotocol/inspector
   - For stdio mode, the server runs as a subprocess
-  - For HTTP mode with --cli: automatic auth header injection (no copy-paste!)
-  - For HTTP mode without --cli: web UI (requires manual header configuration)
-  - Automatically checks for auth0-config.json and obtains token
-  - Manual token via --token or --token-file overrides automatic token
+  - For HTTP --use-proxy: Full UI with automatic auth (RECOMMENDED!)
+  - For HTTP --cli: Text output with automatic auth header
+  - For HTTP direct: Web UI but requires manual header configuration
+  - For HTTP --port-forward: kubectl must be configured for the cluster
+  - Automatically obtains user token from user-token.txt (run ./get-user-token.py first)
 """
     )
 
@@ -218,6 +230,32 @@ Notes:
         '--method',
         default='tools/list',
         help='CLI method to call (default: tools/list)'
+    )
+    parser.add_argument(
+        '--use-proxy',
+        action='store_true',
+        help='Start local auth proxy automatically (eliminates copy-paste in UI mode!)'
+    )
+    parser.add_argument(
+        '--proxy-port',
+        type=int,
+        default=8889,
+        help='Auth proxy port (default: 8889)'
+    )
+    parser.add_argument(
+        '--port-forward',
+        action='store_true',
+        help='Use kubectl port-forward to access MCP server in cluster'
+    )
+    parser.add_argument(
+        '--namespace',
+        default='claude',
+        help='Kubernetes namespace for port-forward (default: claude)'
+    )
+    parser.add_argument(
+        '--service',
+        default='cnpg-mcp-cnpg-mcp',
+        help='Kubernetes service name for port-forward (default: cnpg-mcp-cnpg-mcp)'
     )
 
     args = parser.parse_args()
@@ -331,95 +369,199 @@ Notes:
 
     else:  # HTTP mode
         print(f"{Colors.blue('Transport:')} HTTP")
-        print(f"{Colors.blue('URL:')} {args.url}")
 
-        if token:
-            print(f"{Colors.blue('Authentication:')} JWT Bearer Token ({token_source})")
-            # Show first and last 10 chars of token
-            token_preview = f"{token[:10]}...{token[-10:]}"
-            print(f"{Colors.blue('Token:')} {token_preview}")
-        else:
-            print(f"{Colors.yellow('Authentication:')} None (development mode only!)")
-            print(f"{Colors.yellow('WARNING:')} No token available. This will only work if OIDC is not configured.")
-
-        print()
-        print(Colors.green("Starting MCP Inspector..."))
-        print("The inspector will connect to the HTTP endpoint.")
-        print("Inspector runs a local proxy that forwards requests to your server.")
-        print("Press Ctrl+C to exit.")
-        print()
-
-        mcp_endpoint = f"{args.url}/mcp"
-        print(f"{Colors.blue('Connecting to:')} {mcp_endpoint}")
-        print()
-
-        # CLI mode - automatic header injection!
-        if args.cli:
-            print(Colors.green("Using CLI mode with automatic authentication"))
-            print()
-
-            if not token:
-                print(Colors.red("Error: CLI mode requires authentication token"))
-                print("Run with --token or --token-file, or use stdio transport")
-                sys.exit(1)
-
-            # Build inspector command for CLI mode with header
-            cmd = [
-                'npx', '@modelcontextprotocol/inspector',
-                '--cli',
-                mcp_endpoint,
-                '--transport', 'http',
-                '--method', args.method,
-                '--header', f'Authorization: Bearer {token}'
-            ]
-
-            print(Colors.blue(f"Method: {args.method}"))
-            print()
-            print(Colors.green("No copy-paste needed! Header injected automatically."))
-            print()
-
-        # UI mode - requires manual header configuration
-        else:
-            # Save token to file for manual use
-            if token:
-                token_file = Path("inspector-token.txt")
-                token_file.write_text(token)
-                print(Colors.green(f"✅ Token saved to: {token_file}"))
-                print()
-                print(Colors.yellow("NOTE: Inspector UI mode requires manual header configuration."))
-                print()
-                print("To connect with authentication:")
-                print(f"1. The inspector will open in your browser")
-                print(f"2. In the connection dialog, enter URL: {mcp_endpoint}")
-                print(f"3. Click 'Advanced' or 'Headers'")
-                print(f"4. Add header:")
-                print(f"   - Name: Authorization")
-                print(f"   - Value: Bearer {token[:20]}...{token[-20:]}")
-                print()
-                print("OR copy the full token from inspector-token.txt")
-                print()
-                print(Colors.blue("💡 TIP: Use --cli flag to skip copy-paste!"))
-                print(f"   ./test-inspector.py --transport http --url {args.url} --cli")
-                print()
-                input("Press Enter to launch inspector...")
-                print()
-
-            # Build inspector command for UI mode (no auth injection)
-            cmd = [
-                'npx', '@modelcontextprotocol/inspector',
-                '--transport', 'http',
-                '--url', mcp_endpoint
-            ]
+        # Track background processes for cleanup
+        background_processes = []
 
         try:
-            subprocess.run(cmd, check=True)
-        except subprocess.CalledProcessError as e:
-            print(Colors.red(f"Error: Inspector exited with code {e.returncode}"))
-            sys.exit(e.returncode)
-        except KeyboardInterrupt:
+            # Determine connection mode and URL
+            if args.port_forward:
+                # Mode 1: kubectl port-forward
+                print(f"{Colors.blue('Mode:')} kubectl port-forward")
+                print(f"{Colors.blue('Namespace:')} {args.namespace}")
+                print(f"{Colors.blue('Service:')} {args.service}")
+                print()
+
+                # Start kubectl port-forward
+                print(Colors.green("Starting kubectl port-forward..."))
+                forward_port = 4204
+                port_forward_cmd = [
+                    'kubectl', 'port-forward',
+                    '-n', args.namespace,
+                    f'svc/{args.service}',
+                    f'{forward_port}:4204'
+                ]
+
+                port_forward_proc = subprocess.Popen(
+                    port_forward_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+                background_processes.append(('kubectl port-forward', port_forward_proc))
+
+                # Wait a moment for port-forward to establish
+                time.sleep(2)
+
+                mcp_endpoint = f"http://localhost:{forward_port}/mcp"
+                print(f"✅ Port-forward established")
+                print()
+
+            elif args.use_proxy:
+                # Mode 2: Local auth proxy
+                print(f"{Colors.blue('Mode:')} Auth proxy (auto-injects headers)")
+                print(f"{Colors.blue('Backend:')} {args.url}")
+                print(f"{Colors.blue('Proxy port:')} {args.proxy_port}")
+                print()
+
+                if not token:
+                    print(Colors.red("Error: --use-proxy requires a token"))
+                    print("Run ./get-user-token.py first, or provide --token/--token-file")
+                    sys.exit(1)
+
+                # Start auth proxy
+                print(Colors.green("Starting auth proxy..."))
+                proxy_cmd = [
+                    sys.executable,  # Use same Python interpreter
+                    './mcp-auth-proxy.py',
+                    '--backend', args.url,
+                    '--port', str(args.proxy_port),
+                    '--token-file', 'user-token.txt'
+                ]
+
+                proxy_proc = subprocess.Popen(
+                    proxy_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT
+                )
+                background_processes.append(('auth proxy', proxy_proc))
+
+                # Wait a moment for proxy to start
+                time.sleep(2)
+
+                mcp_endpoint = f"http://localhost:{args.proxy_port}/mcp"
+                print(f"✅ Auth proxy running at http://localhost:{args.proxy_port}")
+                print(f"   (Automatically adds Authorization header)")
+                print()
+
+            else:
+                # Mode 3: Direct connection
+                print(f"{Colors.blue('Mode:')} Direct connection")
+                print(f"{Colors.blue('URL:')} {args.url}")
+                print()
+
+                if token:
+                    print(f"{Colors.blue('Authentication:')} JWT Bearer Token ({token_source})")
+                    token_preview = f"{token[:10]}...{token[-10:]}"
+                    print(f"{Colors.blue('Token:')} {token_preview}")
+                else:
+                    print(f"{Colors.yellow('Authentication:')} None (development mode only!)")
+                    print(f"{Colors.yellow('WARNING:')} No token available. This will only work if OIDC is not configured.")
+                print()
+
+                mcp_endpoint = f"{args.url}/mcp"
+
+            print(Colors.green("Starting MCP Inspector..."))
+            print("The inspector will connect to the HTTP endpoint.")
+            print("Press Ctrl+C to exit.")
             print()
-            print("Interrupted by user")
-            sys.exit(0)
+            print(f"{Colors.blue('Connecting to:')} {mcp_endpoint}")
+            print()
+
+            # Determine Inspector command based on mode
+            if args.cli:
+                # CLI mode - automatic header injection
+                print(Colors.green("Using CLI mode with automatic authentication"))
+                print()
+
+                if not token and not args.use_proxy:
+                    print(Colors.red("Error: CLI mode requires authentication token"))
+                    print("Run with --token or --token-file, or use stdio transport")
+                    sys.exit(1)
+
+                # Build inspector command for CLI mode
+                cmd = [
+                    'npx', '@modelcontextprotocol/inspector',
+                    '--cli',
+                    mcp_endpoint,
+                    '--transport', 'http',
+                    '--method', args.method,
+                ]
+
+                # Only add auth header if not using proxy (proxy handles auth)
+                if not args.use_proxy and token:
+                    cmd.extend(['--header', f'Authorization: Bearer {token}'])
+
+                print(Colors.blue(f"Method: {args.method}"))
+                print()
+                print(Colors.green("No copy-paste needed! Header injected automatically."))
+                print()
+
+            else:
+                # UI mode
+                if not args.use_proxy:
+                    # Direct connection or port-forward - may need manual header
+                    if token:
+                        token_file = Path("inspector-token.txt")
+                        token_file.write_text(token)
+                        print(Colors.green(f"✅ Token saved to: {token_file}"))
+                        print()
+
+                        if not args.port_forward:
+                            # Direct connection needs manual setup
+                            print(Colors.yellow("NOTE: Inspector UI mode requires manual header configuration."))
+                            print()
+                            print("To connect with authentication:")
+                            print(f"1. The inspector will open in your browser")
+                            print(f"2. In the connection dialog, enter URL: {mcp_endpoint}")
+                            print(f"3. Click 'Advanced' or 'Headers'")
+                            print(f"4. Add header:")
+                            print(f"   - Name: Authorization")
+                            print(f"   - Value: Bearer {token[:20]}...{token[-20:]}")
+                            print()
+                            print("OR copy the full token from inspector-token.txt")
+                            print()
+                            print(Colors.blue("💡 TIP: Use --use-proxy to skip copy-paste!"))
+                            print(f"   ./test-inspector.py --transport http --url {args.url} --use-proxy")
+                            print()
+                else:
+                    # Using proxy - no manual configuration needed!
+                    print(Colors.green("✅ No auth configuration needed!"))
+                    print("   The proxy automatically adds the Authorization header")
+                    print()
+
+                if not args.use_proxy and not args.port_forward:
+                    input("Press Enter to launch inspector...")
+                    print()
+
+                # Build inspector command for UI mode
+                cmd = [
+                    'npx', '@modelcontextprotocol/inspector',
+                    '--transport', 'http',
+                    '--url', mcp_endpoint
+                ]
+
+            # Run inspector
+            try:
+                subprocess.run(cmd, check=True)
+            except subprocess.CalledProcessError as e:
+                print(Colors.red(f"Error: Inspector exited with code {e.returncode}"))
+                sys.exit(e.returncode)
+            except KeyboardInterrupt:
+                print()
+                print("Interrupted by user")
+
+        finally:
+            # Cleanup background processes
+            for name, proc in background_processes:
+                print()
+                print(Colors.yellow(f"Stopping {name}..."))
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                    print(f"✅ {name} stopped")
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    print(f"⚠️  {name} killed")
 
 
 if __name__ == "__main__":
