@@ -46,12 +46,14 @@ setup(
         "Topic :: Software Development :: Libraries :: Python Modules",
     ],
     keywords="postgresql postgres cloudnativepg cnpg kubernetes k8s database mcp cluster-management ha",
-    py_modules=["cnpg_mcp_server"],
+    packages=["src"],
+    package_dir={"src": "src"},
+    py_modules=["src.cnpg_mcp_server", "src.auth_oidc"],
     python_requires=">=3.11",
     install_requires=requirements,
     entry_points={
         "console_scripts": [
-            "cnpg-mcp-server=cnpg_mcp_server:run",
+            "cnpg-mcp-server=src.cnpg_mcp_server:run",
         ],
     },
     include_package_data=True,

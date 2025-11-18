@@ -7,8 +7,8 @@ Inspector connects to the proxy (no auth needed), and the proxy forwards
 requests to the real server with automatic Authorization header injection.
 
 Usage:
-    1. Get a user token: ./get-user-token.py
-    2. Start the proxy: ./mcp-auth-proxy.py
+    1. Get a user token: ./test/get-user-token.py
+    2. Start the proxy: ./test/mcp-auth-proxy.py
     3. Use Inspector normally: npx @modelcontextprotocol/inspector --transport http --url http://localhost:8889/mcp
 
 The proxy automatically adds the Authorization header, so no copy-paste needed!
@@ -111,10 +111,10 @@ def main():
 Example Usage:
 
   1. Get a user token (if you don't have one):
-     ./get-user-token.py
+     ./test/get-user-token.py
 
   2. Start the proxy:
-     ./mcp-auth-proxy.py --backend https://cnpg-mcp.wat.im
+     ./test/mcp-auth-proxy.py --backend https://cnpg-mcp.wat.im
 
   3. Use Inspector with the proxy (NO AUTH NEEDED!):
      npx @modelcontextprotocol/inspector --transport http --url http://localhost:8889/mcp
@@ -160,7 +160,7 @@ The proxy automatically injects the Authorization header from user-token.txt.
             print(f"❌ No token found in {args.token_file}")
             print()
             print("To get a user token, run:")
-            print("  ./get-user-token.py")
+            print("  ./test/get-user-token.py")
             print()
             return 1
 

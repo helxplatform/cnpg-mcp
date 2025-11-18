@@ -130,7 +130,7 @@ echo ""
 # Run inspector based on transport mode
 if [[ "$TRANSPORT" == "stdio" ]]; then
     echo -e "${BLUE}Transport:${NC} stdio"
-    echo -e "${BLUE}Command:${NC} python cnpg_mcp_server.py"
+    echo -e "${BLUE}Command:${NC} python src/cnpg_mcp_server.py"
     echo ""
     echo -e "${GREEN}Starting MCP Inspector...${NC}"
     echo "The inspector will launch the server as a subprocess."
@@ -138,7 +138,7 @@ if [[ "$TRANSPORT" == "stdio" ]]; then
     echo ""
 
     # Run inspector with stdio transport
-    npx @modelcontextprotocol/inspector python cnpg_mcp_server.py
+    npx @modelcontextprotocol/inspector python src/cnpg_mcp_server.py
 
 elif [[ "$TRANSPORT" == "http" ]]; then
     echo -e "${BLUE}Transport:${NC} HTTP"

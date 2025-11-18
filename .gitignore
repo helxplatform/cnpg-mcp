@@ -10,6 +10,7 @@ output
 auth
 token.txt
 *.tgz
+tmp
 
 # OS generated files #
 ######################

@@ -193,7 +193,7 @@ Notes:
   - For HTTP --cli: Text output with automatic auth header
   - For HTTP direct: Web UI but requires manual header configuration
   - For HTTP --port-forward: kubectl must be configured for the cluster
-  - Automatically obtains user token from user-token.txt (run ./get-user-token.py first)
+  - Automatically obtains user token from tmp/user-token.txt (run ./test/get-user-token.py first)
 """
     )
 
@@ -295,18 +295,18 @@ Notes:
 
         token_source = f"file: {args.token_file}"
 
-    # Priority 3: Auto-obtain from auth0-config.json or user-token.txt (only for HTTP mode)
+    # Priority 3: Auto-obtain from auth0-config.json or tmp/user-token.txt (only for HTTP mode)
     elif args.transport == 'http':
         # For CLI mode, prefer user token (has openid scope)
         # For UI mode, M2M token is fine since user will configure headers manually
 
         if args.cli:
             # CLI mode requires user token with openid scope
-            user_token_file = Path("user-token.txt")
+            user_token_file = Path("tmp/user-token.txt")
 
             if user_token_file.exists():
                 token = user_token_file.read_text().strip()
-                token_source = "user-token.txt (user authentication)"
+                token_source = "tmp/user-token.txt (user authentication)"
                 print(Colors.green(f"✅ Using user token from {user_token_file}"))
                 print()
             else:
@@ -315,7 +315,7 @@ Notes:
                 print("CLI mode requires user authentication (with 'openid' scope).")
                 print()
                 print("To get a user token, run:")
-                print("  ./get-user-token.py")
+                print("  ./test/get-user-token.py")
                 print()
                 print("Then try again:")
                 print(f"  {' '.join(sys.argv)}")
@@ -347,7 +347,7 @@ Notes:
     # Run inspector based on transport mode
     if args.transport == 'stdio':
         print(f"{Colors.blue('Transport:')} stdio")
-        print(f"{Colors.blue('Command:')} python cnpg_mcp_server.py")
+        print(f"{Colors.blue('Command:')} python src/cnpg_mcp_server.py")
         print()
         print(Colors.green("Starting MCP Inspector..."))
         print("The inspector will launch the server as a subprocess.")
@@ -415,17 +415,17 @@ Notes:
 
                 if not token:
                     print(Colors.red("Error: --use-proxy requires a token"))
-                    print("Run ./get-user-token.py first, or provide --token/--token-file")
+                    print("Run ./test/get-user-token.py first, or provide --token/--token-file")
                     sys.exit(1)
 
                 # Start auth proxy
                 print(Colors.green("Starting auth proxy..."))
                 proxy_cmd = [
                     sys.executable,  # Use same Python interpreter
-                    './mcp-auth-proxy.py',
+                    './test/mcp-auth-proxy.py',
                     '--backend', args.url,
                     '--port', str(args.proxy_port),
-                    '--token-file', 'user-token.txt'
+                    '--token-file', 'tmp/user-token.txt'
                 ]
 
                 proxy_proc = subprocess.Popen(
