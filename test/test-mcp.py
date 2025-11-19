@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-Test Inspector for CloudNativePG MCP Server
-Supports both stdio and HTTP transport modes using MCP Inspector
+CloudNativePG MCP Server Test Runner
+
+Primary testing tool with two modes:
+1. Automated tests via plugin system (default)
+2. Interactive Inspector UI (--use-inspector flag)
 
 Automatically obtains tokens from auth0-config.json if available.
 """
@@ -13,8 +16,11 @@ import argparse
 import subprocess
 import shutil
 import time
+import asyncio
+import importlib
+import inspect
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 # Colors for terminal output
 class Colors:
@@ -203,48 +209,212 @@ def get_token_from_auth0(config: Dict[str, Any]) -> Optional[str]:
         return None
 
 
+def discover_plugins(plugins_dir: Path) -> List:
+    """Discover all test plugins in the plugins directory."""
+    plugins = []
+
+    if not plugins_dir.exists():
+        return plugins
+
+    # Import plugins package
+    sys.path.insert(0, str(plugins_dir.parent))
+
+    for plugin_file in plugins_dir.glob("test_*.py"):
+        try:
+            # Import the module
+            module_name = f"plugins.{plugin_file.stem}"
+            module = importlib.import_module(module_name)
+
+            # Find TestPlugin subclasses
+            for name, obj in inspect.getmembers(module, inspect.isclass):
+                # Check if it's a TestPlugin subclass (but not TestPlugin itself)
+                if (hasattr(obj, 'test') and
+                    callable(obj.test) and
+                    obj.__module__ == module_name):
+                    plugins.append(obj())
+
+        except Exception as e:
+            print(Colors.yellow(f"⚠️  Failed to load plugin {plugin_file.name}: {e}"))
+
+    return plugins
+
+
+async def run_automated_tests(transport: str, url: str = None) -> int:
+    """
+    Run automated tests using plugin system.
+
+    Args:
+        transport: 'stdio' or 'http'
+        url: HTTP URL if transport is 'http'
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    print("=" * 70)
+    print(Colors.blue("CloudNativePG MCP Server - Automated Test Suite"))
+    print("=" * 70)
+    print()
+
+    # Discover plugins
+    plugins_dir = Path(__file__).parent / "plugins"
+    plugins = discover_plugins(plugins_dir)
+
+    if not plugins:
+        print(Colors.yellow("⚠️  No test plugins found"))
+        print(f"   Expected plugins in: {plugins_dir}")
+        print()
+        print("To create a test plugin, add a file like test/plugins/test_my_tool.py:")
+        print("  from plugins import TestPlugin, TestResult")
+        print("  class MyToolTest(TestPlugin):")
+        print("      tool_name = 'my_tool'")
+        print("      async def test(self, session): ...")
+        return 1
+
+    print(f"📋 Discovered {len(plugins)} test plugin(s)")
+    for plugin in plugins:
+        print(f"   • {plugin.tool_name}: {plugin.description}")
+    print()
+
+    # Setup MCP client based on transport
+    if transport == 'stdio':
+        print(Colors.blue("Transport: stdio"))
+        print(f"Command: python src/cnpg_mcp_server.py")
+        print()
+
+        try:
+            from mcp.client.stdio import stdio_client, StdioServerParameters
+            from mcp.client.session import ClientSession
+
+            server_params = StdioServerParameters(
+                command="python",
+                args=["src/cnpg_mcp_server.py"],
+            )
+
+            async with stdio_client(server_params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    # Initialize
+                    init_result = await session.initialize()
+                    print(Colors.green(f"✅ Connected to server"))
+                    print(f"   Name: {init_result.serverInfo.name}")
+                    print(f"   Version: {init_result.serverInfo.version}")
+                    print()
+
+                    # Run all plugins
+                    return await run_plugin_tests(session, plugins)
+
+        except ImportError as e:
+            print(Colors.red(f"❌ Failed to import MCP client library: {e}"))
+            print()
+            print("Install with: pip install mcp")
+            return 1
+        except Exception as e:
+            print(Colors.red(f"❌ Failed to start server: {e}"))
+            return 1
+
+    else:  # HTTP transport
+        print(Colors.red("❌ HTTP transport not yet implemented for automated tests"))
+        print("   Use stdio transport for automated testing")
+        return 1
+
+
+async def run_plugin_tests(session, plugins: List) -> int:
+    """Run all plugin tests and report results."""
+    print("=" * 70)
+    print("Running Tests")
+    print("=" * 70)
+    print()
+
+    results = []
+    passed = 0
+    failed = 0
+
+    for plugin in plugins:
+        print(f"▶️  {plugin.get_name()}...", end=" ", flush=True)
+
+        try:
+            result = await plugin.test(session)
+            results.append(result)
+
+            if result.passed:
+                print(Colors.green("✅ PASS"))
+                passed += 1
+            else:
+                print(Colors.red("❌ FAIL"))
+                failed += 1
+
+            # Show details
+            if result.duration_ms:
+                print(f"   Duration: {result.duration_ms:.1f}ms")
+            print(f"   {result.message}")
+            if result.error:
+                print(Colors.red(f"   Error: {result.error}"))
+            print()
+
+        except Exception as e:
+            print(Colors.red("❌ EXCEPTION"))
+            print(Colors.red(f"   Unexpected error: {e}"))
+            print()
+            failed += 1
+
+    # Summary
+    print("=" * 70)
+    print("Test Summary")
+    print("=" * 70)
+    print()
+    print(f"Total:  {passed + failed} tests")
+    print(Colors.green(f"Passed: {passed}"))
+    print(Colors.red(f"Failed: {failed}"))
+    print()
+
+    if failed == 0:
+        print(Colors.green("🎉 All tests passed!"))
+        return 0
+    else:
+        print(Colors.red(f"❌ {failed} test(s) failed"))
+        return 1
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Test the CloudNativePG MCP Server using MCP Inspector",
+        description="CloudNativePG MCP Server Test Runner",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Test stdio transport (local development)
-  ./test-inspector.py
+  # Run automated tests (default mode)
+  ./test-mcp.py
 
-  # Test HTTP with auth proxy (EASIEST! Full UI, zero copy-paste! 🎉)
-  ./test-inspector.py --transport http --url https://cnpg-mcp.wat.im --use-proxy
+  # Run automated tests with specific transport
+  ./test-mcp.py --transport stdio
 
-  # Test HTTP with kubectl port-forward (for testing in-cluster deployment)
-  ./test-inspector.py --transport http --port-forward --namespace claude
+  # Launch Inspector UI for manual testing
+  ./test-mcp.py --use-inspector
 
-  # Test HTTP direct with CLI mode (text output, automatic auth header)
-  ./test-inspector.py --transport http --url https://cnpg-mcp.wat.im --cli
+  # Inspector with HTTP and auth proxy (easiest for manual testing)
+  ./test-mcp.py --use-inspector --transport http --url https://cnpg-mcp.wat.im --use-proxy
 
-  # Test HTTP direct with UI mode (requires manual header setup)
-  ./test-inspector.py --transport http --url https://cnpg-mcp.wat.im
-
-  # Custom proxy port
-  ./test-inspector.py --transport http --url https://cnpg-mcp.wat.im --use-proxy --proxy-port 9000
+  # Inspector with kubectl port-forward
+  ./test-mcp.py --use-inspector --transport http --port-forward --namespace claude
 
 Testing Modes:
-  stdio           - Local server as subprocess (no auth)
-  http direct     - Connect to remote HTTPS server (manual auth in UI)
-  http --use-proxy - Auto-start auth proxy (ZERO copy-paste, full UI!)
-  http --port-forward - Use kubectl to access in-cluster service
-  http --cli      - CLI mode with automatic auth header
+  Default         - Automated tests via plugin system (no Inspector)
+  --use-inspector - Launch Inspector UI for manual testing
+
+Transports:
+  stdio (default) - Local server as subprocess
+  http            - Connect to remote HTTP server
+
+Inspector Options (only with --use-inspector):
+  --use-proxy     - Auto-start auth proxy (eliminates manual header setup)
+  --port-forward  - Use kubectl to access in-cluster service
 
 Environment Variables:
   MCP_HTTP_URL    Default HTTP URL (default: http://localhost:4204)
 
 Notes:
-  - Requires npx and @modelcontextprotocol/inspector
-  - For stdio mode, the server runs as a subprocess
-  - For HTTP --use-proxy: Full UI with automatic auth (RECOMMENDED!)
-  - For HTTP --cli: Text output with automatic auth header
-  - For HTTP direct: Web UI but requires manual header configuration
-  - For HTTP --port-forward: kubectl must be configured for the cluster
-  - Automatically obtains user token from tmp/user-token.txt (run ./test/get-user-token.py first)
+  - Default mode runs automated tests (fast, CI-friendly)
+  - Use --use-inspector for interactive testing/debugging
+  - Automated tests use plugin system (test/plugins/test_*.py)
+  - Automatically obtains user token when needed
 """
     )
 
@@ -273,19 +443,14 @@ Notes:
         help='Path to auth0-config.json (default: ./auth0-config.json)'
     )
     parser.add_argument(
-        '--cli',
+        '--use-inspector',
         action='store_true',
-        help='Use Inspector CLI mode (no copy-paste needed for auth!)'
-    )
-    parser.add_argument(
-        '--method',
-        default='tools/list',
-        help='CLI method to call (default: tools/list)'
+        help='Launch Inspector UI for manual testing (default: run automated tests)'
     )
     parser.add_argument(
         '--use-proxy',
         action='store_true',
-        help='Start local auth proxy automatically (eliminates copy-paste in UI mode!)'
+        help='[Inspector only] Start local auth proxy automatically'
     )
     parser.add_argument(
         '--proxy-port',
@@ -311,7 +476,13 @@ Notes:
 
     args = parser.parse_args()
 
-    # Check if npx is available
+    # Route to automated tests or Inspector based on flag
+    if not args.use_inspector:
+        # Default: Run automated tests
+        exit_code = asyncio.run(run_automated_tests(args.transport, args.url))
+        sys.exit(exit_code)
+
+    # Inspector mode below - check if npx is available
     if not check_npx():
         print(Colors.red("Error: npx is not installed"))
         print("Please install Node.js and npm to use the MCP Inspector")
@@ -346,23 +517,20 @@ Notes:
 
         token_source = f"file: {args.token_file}"
 
-    # Priority 3: Auto-obtain from auth0-config.json or tmp/user-token.txt (only for HTTP mode)
+    # Priority 3: Auto-obtain from auth0-config.json (only for HTTP Inspector mode)
     elif args.transport == 'http':
-        # For CLI mode, prefer user token (has openid scope)
-        # For UI mode, M2M token is fine since user will configure headers manually
+        # Try client credentials, fall back to user auth if needed
+        auth0_config = load_auth0_config(args.auth0_config)
 
-        if args.cli:
-            # CLI mode requires user token with openid scope
-            # Try Auth0 first
-            auth0_config = load_auth0_config(args.auth0_config)
-
-            if auth0_config:
-                print(Colors.green(f"✅ Found {args.auth0_config}"))
-                print()
-                token = get_token_from_auth0(auth0_config)
-                if token:
-                    token_source = f"auto-obtained from {args.auth0_config} (client credentials)"
-                else:
+        if auth0_config:
+            print(Colors.green(f"✅ Found {args.auth0_config}"))
+            print()
+            token = get_token_from_auth0(auth0_config)
+            if token:
+                token_source = f"auto-obtained from {args.auth0_config} (client credentials)"
+            else:
+                # If using proxy (which requires token), try user authentication
+                if args.use_proxy:
                     print(Colors.yellow("⚠️  Client credentials failed (likely missing 'openid' scope)"))
                     print()
                     print("Attempting user authentication instead...")
@@ -373,48 +541,18 @@ Notes:
                         print()
                         print(Colors.red("❌ Failed to obtain token via user authentication"))
                         sys.exit(1)
-
-            if not token:
-                print(Colors.yellow(f"⚠️  No token available"))
-                print()
-                print("CLI mode requires user authentication (with 'openid' scope).")
-                print()
-                sys.exit(1)
-        else:
-            # UI mode - try client credentials, fall back to user auth if needed
-            auth0_config = load_auth0_config(args.auth0_config)
-
-            if auth0_config:
-                print(Colors.green(f"✅ Found {args.auth0_config}"))
-                print()
-                token = get_token_from_auth0(auth0_config)
-                if token:
-                    token_source = f"auto-obtained from {args.auth0_config} (client credentials)"
                 else:
-                    # If using proxy (which requires token), try user authentication
-                    if args.use_proxy:
-                        print(Colors.yellow("⚠️  Client credentials failed (likely missing 'openid' scope)"))
-                        print()
-                        print("Attempting user authentication instead...")
-                        token = get_user_token_interactive()
-                        if token:
-                            token_source = "user authentication (Authorization Code Flow)"
-                        else:
-                            print()
-                            print(Colors.red("❌ Failed to obtain token via user authentication"))
-                            sys.exit(1)
-                    else:
-                        print()
-                        print(Colors.yellow("⚠️  Could not automatically obtain token"))
-                        print()
-            else:
-                print(Colors.yellow(f"⚠️  No {args.auth0_config} found"))
-                print()
-                print("To enable automatic token retrieval:")
-                print(f"1. Run: python bin/setup-auth0.py --token YOUR_AUTH0_MGMT_TOKEN")
-                print(f"2. This will create {args.auth0_config} with client credentials")
-                print(f"3. The inspector will automatically obtain tokens")
-                print()
+                    print()
+                    print(Colors.yellow("⚠️  Could not automatically obtain token"))
+                    print()
+        else:
+            print(Colors.yellow(f"⚠️  No {args.auth0_config} found"))
+            print()
+            print("To enable automatic token retrieval:")
+            print(f"1. Run: python bin/setup-auth0.py --token YOUR_AUTH0_MGMT_TOKEN")
+            print(f"2. This will create {args.auth0_config} with client credentials")
+            print(f"3. The inspector will automatically obtain tokens")
+            print()
 
     # Run inspector based on transport mode
     if args.transport == 'stdio':
@@ -550,78 +688,48 @@ Notes:
             print(f"{Colors.blue('Connecting to:')} {mcp_endpoint}")
             print()
 
-            # Determine Inspector command based on mode
-            if args.cli:
-                # CLI mode - automatic header injection
-                print(Colors.green("Using CLI mode with automatic authentication"))
-                print()
+            # Inspector UI mode
+            if not args.use_proxy:
+                # Direct connection or port-forward - may need manual header
+                if token:
+                    token_file = Path("inspector-token.txt")
+                    token_file.write_text(token)
+                    print(Colors.green(f"✅ Token saved to: {token_file}"))
+                    print()
 
-                if not token and not args.use_proxy:
-                    print(Colors.red("Error: CLI mode requires authentication token"))
-                    print("Run with --token or --token-file, or use stdio transport")
-                    sys.exit(1)
-
-                # Build inspector command for CLI mode
-                cmd = [
-                    'npx', '@modelcontextprotocol/inspector',
-                    '--cli',
-                    mcp_endpoint,
-                    '--transport', 'http',
-                    '--method', args.method,
-                ]
-
-                # Only add auth header if not using proxy (proxy handles auth)
-                if not args.use_proxy and token:
-                    cmd.extend(['--header', f'Authorization: Bearer {token}'])
-
-                print(Colors.blue(f"Method: {args.method}"))
-                print()
-                print(Colors.green("No copy-paste needed! Header injected automatically."))
-                print()
-
-            else:
-                # UI mode
-                if not args.use_proxy:
-                    # Direct connection or port-forward - may need manual header
-                    if token:
-                        token_file = Path("inspector-token.txt")
-                        token_file.write_text(token)
-                        print(Colors.green(f"✅ Token saved to: {token_file}"))
+                    if not args.port_forward:
+                        # Direct connection needs manual setup
+                        print(Colors.yellow("NOTE: Inspector UI mode requires manual header configuration."))
                         print()
+                        print("To connect with authentication:")
+                        print(f"1. The inspector will open in your browser")
+                        print(f"2. In the connection dialog, enter URL: {mcp_endpoint}")
+                        print(f"3. Click 'Advanced' or 'Headers'")
+                        print(f"4. Add header:")
+                        print(f"   - Name: Authorization")
+                        print(f"   - Value: Bearer {token[:20]}...{token[-20:]}")
+                        print()
+                        print("OR copy the full token from inspector-token.txt")
+                        print()
+                        print(Colors.blue("💡 TIP: Use --use-proxy to skip copy-paste!"))
+                        print(f"   ./test-mcp.py --use-inspector --transport http --url {args.url} --use-proxy")
+                        print()
+            else:
+                # Using proxy - no manual configuration needed!
+                print(Colors.green("✅ No auth configuration needed!"))
+                print("   The proxy automatically adds the Authorization header")
+                print()
 
-                        if not args.port_forward:
-                            # Direct connection needs manual setup
-                            print(Colors.yellow("NOTE: Inspector UI mode requires manual header configuration."))
-                            print()
-                            print("To connect with authentication:")
-                            print(f"1. The inspector will open in your browser")
-                            print(f"2. In the connection dialog, enter URL: {mcp_endpoint}")
-                            print(f"3. Click 'Advanced' or 'Headers'")
-                            print(f"4. Add header:")
-                            print(f"   - Name: Authorization")
-                            print(f"   - Value: Bearer {token[:20]}...{token[-20:]}")
-                            print()
-                            print("OR copy the full token from inspector-token.txt")
-                            print()
-                            print(Colors.blue("💡 TIP: Use --use-proxy to skip copy-paste!"))
-                            print(f"   ./test-inspector.py --transport http --url {args.url} --use-proxy")
-                            print()
-                else:
-                    # Using proxy - no manual configuration needed!
-                    print(Colors.green("✅ No auth configuration needed!"))
-                    print("   The proxy automatically adds the Authorization header")
-                    print()
+            if not args.use_proxy and not args.port_forward:
+                input("Press Enter to launch inspector...")
+                print()
 
-                if not args.use_proxy and not args.port_forward:
-                    input("Press Enter to launch inspector...")
-                    print()
-
-                # Build inspector command for UI mode
-                cmd = [
-                    'npx', '@modelcontextprotocol/inspector',
-                    '--transport', 'http',
-                    '--url', mcp_endpoint
-                ]
+            # Build inspector command for UI mode
+            cmd = [
+                'npx', '@modelcontextprotocol/inspector',
+                '--transport', 'http',
+                '--url', mcp_endpoint
+            ]
 
             # Run inspector
             try:
