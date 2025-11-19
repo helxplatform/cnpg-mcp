@@ -67,8 +67,8 @@ def get_user_token_interactive() -> Optional[str]:
             print(Colors.red("❌ User authentication failed"))
             return None
 
-        # Token should be saved to user-token.txt
-        token_file = Path("user-token.txt")
+        # Token should be saved to /tmp/user-token.txt
+        token_file = Path("/tmp/user-token.txt")
         if token_file.exists():
             token = token_file.read_text().strip()
             print()
