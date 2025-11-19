@@ -239,13 +239,17 @@ def discover_plugins(plugins_dir: Path) -> List:
     return plugins
 
 
-async def run_automated_tests(transport: str, url: str = None) -> int:
+async def run_automated_tests(transport: str, url: str = None, token: str = None,
+                              token_file: str = None, auth0_config_path: str = "auth0-config.json") -> int:
     """
     Run automated tests using plugin system.
 
     Args:
         transport: 'stdio' or 'http'
         url: HTTP URL if transport is 'http'
+        token: JWT bearer token for HTTP authentication
+        token_file: Path to file containing JWT token
+        auth0_config_path: Path to auth0-config.json for automatic token retrieval
 
     Returns:
         Exit code (0 for success, 1 for failure)
@@ -312,9 +316,99 @@ async def run_automated_tests(transport: str, url: str = None) -> int:
             return 1
 
     else:  # HTTP transport
-        print(Colors.red("❌ HTTP transport not yet implemented for automated tests"))
-        print("   Use stdio transport for automated testing")
-        return 1
+        print(Colors.blue("Transport: HTTP"))
+        print(f"URL: {url}")
+        print()
+
+        # Get authentication token with priority:
+        # 1. Manual token via --token
+        # 2. Token file via --token-file
+        # 3. Auto-obtain from auth0-config.json
+        auth_token = None
+        token_source = None
+
+        if token:
+            auth_token = token.strip()
+            token_source = "command line argument"
+        elif token_file:
+            token_path = Path(token_file)
+            if not token_path.exists():
+                print(Colors.red(f"❌ Token file not found: {token_file}"))
+                return 1
+            auth_token = token_path.read_text().strip()
+            if not auth_token:
+                print(Colors.red(f"❌ Token file is empty: {token_file}"))
+                return 1
+            token_source = f"file: {token_file}"
+        else:
+            # Try auto-obtain from auth0-config.json
+            auth0_config = load_auth0_config(auth0_config_path)
+
+            if auth0_config:
+                print(Colors.green(f"✅ Found {auth0_config_path}"))
+                print()
+                auth_token = get_token_from_auth0(auth0_config)
+
+                if auth_token:
+                    token_source = f"auto-obtained from {auth0_config_path}"
+                else:
+                    # Try user authentication as fallback
+                    print(Colors.yellow("⚠️  Client credentials failed, trying user authentication..."))
+                    print()
+                    auth_token = get_user_token_interactive()
+
+                    if auth_token:
+                        token_source = "user authentication (Authorization Code Flow)"
+                    else:
+                        print()
+                        print(Colors.red("❌ Failed to obtain authentication token"))
+                        return 1
+            else:
+                print(Colors.yellow(f"⚠️  No {auth0_config_path} found"))
+                print("   Attempting connection without authentication...")
+                print()
+
+        if auth_token:
+            print(Colors.green(f"✅ Using token from: {token_source}"))
+            print()
+
+        try:
+            from mcp.client.streamable_http import streamablehttp_client
+            from mcp.client.session import ClientSession
+
+            # Construct MCP endpoint URL
+            mcp_url = f"{url}/mcp" if not url.endswith('/mcp') else url
+
+            # Prepare headers
+            headers = {}
+            if auth_token:
+                headers["Authorization"] = f"Bearer {auth_token}"
+
+            print(Colors.blue(f"Connecting to: {mcp_url}"))
+            print()
+
+            async with streamablehttp_client(mcp_url, headers=headers) as (read, write, get_session_id):
+                async with ClientSession(read, write) as session:
+                    # Initialize
+                    init_result = await session.initialize()
+                    print(Colors.green(f"✅ Connected to server"))
+                    print(f"   Name: {init_result.serverInfo.name}")
+                    print(f"   Version: {init_result.serverInfo.version}")
+                    print()
+
+                    # Run all plugins
+                    return await run_plugin_tests(session, plugins)
+
+        except ImportError as e:
+            print(Colors.red(f"❌ Failed to import MCP Streamable HTTP client library: {e}"))
+            print()
+            print("Install with: pip install mcp")
+            return 1
+        except Exception as e:
+            print(Colors.red(f"❌ Failed to connect to server: {e}"))
+            import traceback
+            traceback.print_exc()
+            return 1
 
 
 async def run_plugin_tests(session, plugins: List) -> int:
@@ -380,11 +474,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Run automated tests (default mode)
+  # Run automated tests (default mode with stdio)
   ./test-mcp.py
 
-  # Run automated tests with specific transport
-  ./test-mcp.py --transport stdio
+  # Run automated tests with HTTP transport
+  ./test-mcp.py --transport http --url https://cnpg-mcp.wat.im
 
   # Launch Inspector UI for manual testing
   ./test-mcp.py --use-inspector
@@ -479,7 +573,13 @@ Notes:
     # Route to automated tests or Inspector based on flag
     if not args.use_inspector:
         # Default: Run automated tests
-        exit_code = asyncio.run(run_automated_tests(args.transport, args.url))
+        exit_code = asyncio.run(run_automated_tests(
+            transport=args.transport,
+            url=args.url,
+            token=args.token,
+            token_file=args.token_file,
+            auth0_config_path=args.auth0_config
+        ))
         sys.exit(exit_code)
 
     # Inspector mode below - check if npx is available
