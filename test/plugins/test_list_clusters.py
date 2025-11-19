@@ -1,7 +1,7 @@
 """Test plugin for list_postgres_clusters tool."""
 
 import time
-from . import TestPlugin, TestResult
+from . import TestPlugin, TestResult, check_for_operational_error
 
 
 class ListClustersTest(TestPlugin):
@@ -44,6 +44,18 @@ class ListClustersTest(TestPlugin):
                     tool_name=self.tool_name,
                     passed=False,
                     message=f"Response too short ({len(response_text)} chars)",
+                    duration_ms=(time.time() - start_time) * 1000
+                )
+
+            # Check for operational errors (e.g., RBAC issues, connection failures)
+            is_error, error_msg = check_for_operational_error(response_text)
+            if is_error:
+                return TestResult(
+                    plugin_name=self.get_name(),
+                    tool_name=self.tool_name,
+                    passed=False,
+                    message="Tool executed but operation failed",
+                    error=error_msg,
                     duration_ms=(time.time() - start_time) * 1000
                 )
 

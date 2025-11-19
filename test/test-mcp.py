@@ -240,7 +240,8 @@ def discover_plugins(plugins_dir: Path) -> List:
 
 
 async def run_automated_tests(transport: str, url: str = None, token: str = None,
-                              token_file: str = None, auth0_config_path: str = "auth0-config.json") -> int:
+                              token_file: str = None, auth0_config_path: str = "auth0-config.json",
+                              output_file: str = None, output_format: str = "json") -> int:
     """
     Run automated tests using plugin system.
 
@@ -250,6 +251,8 @@ async def run_automated_tests(transport: str, url: str = None, token: str = None
         token: JWT bearer token for HTTP authentication
         token_file: Path to file containing JWT token
         auth0_config_path: Path to auth0-config.json for automatic token retrieval
+        output_file: Path to save test results (optional)
+        output_format: Format for saved results ('json' or 'junit')
 
     Returns:
         Exit code (0 for success, 1 for failure)
@@ -304,7 +307,13 @@ async def run_automated_tests(transport: str, url: str = None, token: str = None
                     print()
 
                     # Run all plugins
-                    return await run_plugin_tests(session, plugins)
+                    exit_code, results = await run_plugin_tests(session, plugins)
+
+                    # Save results if requested
+                    if output_file:
+                        save_test_results(results, output_file, output_format, transport, url)
+
+                    return exit_code
 
         except ImportError as e:
             print(Colors.red(f"❌ Failed to import MCP client library: {e}"))
@@ -397,7 +406,13 @@ async def run_automated_tests(transport: str, url: str = None, token: str = None
                     print()
 
                     # Run all plugins
-                    return await run_plugin_tests(session, plugins)
+                    exit_code, results = await run_plugin_tests(session, plugins)
+
+                    # Save results if requested
+                    if output_file:
+                        save_test_results(results, output_file, output_format, transport, url)
+
+                    return exit_code
 
         except ImportError as e:
             print(Colors.red(f"❌ Failed to import MCP Streamable HTTP client library: {e}"))
@@ -411,8 +426,13 @@ async def run_automated_tests(transport: str, url: str = None, token: str = None
             return 1
 
 
-async def run_plugin_tests(session, plugins: List) -> int:
-    """Run all plugin tests and report results."""
+async def run_plugin_tests(session, plugins: List) -> tuple[int, List]:
+    """
+    Run all plugin tests and report results.
+
+    Returns:
+        Tuple of (exit_code, results_list)
+    """
     print("=" * 70)
     print("Running Tests")
     print("=" * 70)
@@ -450,6 +470,16 @@ async def run_plugin_tests(session, plugins: List) -> int:
             print()
             failed += 1
 
+            # Create a failed result for the exception
+            from plugins import TestResult
+            results.append(TestResult(
+                plugin_name=plugin.get_name(),
+                tool_name=plugin.tool_name,
+                passed=False,
+                message=f"Unexpected exception during test",
+                error=str(e)
+            ))
+
     # Summary
     print("=" * 70)
     print("Test Summary")
@@ -462,10 +492,106 @@ async def run_plugin_tests(session, plugins: List) -> int:
 
     if failed == 0:
         print(Colors.green("🎉 All tests passed!"))
-        return 0
+        exit_code = 0
     else:
         print(Colors.red(f"❌ {failed} test(s) failed"))
-        return 1
+        exit_code = 1
+
+    return exit_code, results
+
+
+def save_test_results(results: List, output_file: str, format: str = "json",
+                      transport: str = "stdio", url: str = None):
+    """
+    Save test results to a file.
+
+    Args:
+        results: List of TestResult objects
+        output_file: Path to output file
+        format: Output format ('json' or 'junit')
+        transport: Transport mode used
+        url: URL if HTTP transport was used
+    """
+    from datetime import datetime, timezone
+
+    if format == "json":
+        # Create JSON structure
+        output = {
+            "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+            "transport": transport,
+            "url": url if transport == "http" else None,
+            "summary": {
+                "total": len(results),
+                "passed": sum(1 for r in results if r.passed),
+                "failed": sum(1 for r in results if not r.passed),
+                "duration_ms": sum(r.duration_ms or 0 for r in results)
+            },
+            "tests": [
+                {
+                    "plugin_name": r.plugin_name,
+                    "tool_name": r.tool_name,
+                    "passed": r.passed,
+                    "message": r.message,
+                    "error": r.error,
+                    "duration_ms": r.duration_ms
+                }
+                for r in results
+            ]
+        }
+
+        with open(output_file, 'w') as f:
+            json.dump(output, f, indent=2)
+
+        print()
+        print(Colors.green(f"✅ Test results saved to: {output_file}"))
+        print(f"   Format: JSON")
+
+    elif format == "junit":
+        # Create JUnit XML structure
+        import xml.etree.ElementTree as ET
+
+        total = len(results)
+        failures = sum(1 for r in results if not r.passed)
+        duration_s = sum(r.duration_ms or 0 for r in results) / 1000.0
+
+        testsuite = ET.Element("testsuite", {
+            "name": "MCP Automated Tests",
+            "tests": str(total),
+            "failures": str(failures),
+            "errors": "0",
+            "time": f"{duration_s:.3f}",
+            "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        })
+
+        # Add properties
+        properties = ET.SubElement(testsuite, "properties")
+        ET.SubElement(properties, "property", {"name": "transport", "value": transport})
+        if url:
+            ET.SubElement(properties, "property", {"name": "url", "value": url})
+
+        # Add test cases
+        for r in results:
+            testcase = ET.SubElement(testsuite, "testcase", {
+                "name": r.plugin_name,
+                "classname": f"mcp.tools.{r.tool_name}",
+                "time": f"{(r.duration_ms or 0) / 1000:.3f}"
+            })
+
+            if not r.passed:
+                failure = ET.SubElement(testcase, "failure", {
+                    "message": r.message
+                })
+                if r.error:
+                    failure.text = r.error
+
+        # Write XML
+        tree = ET.ElementTree(testsuite)
+        ET.indent(tree, space="  ")
+        tree.write(output_file, encoding="utf-8", xml_declaration=True)
+
+        print()
+        print(Colors.green(f"✅ Test results saved to: {output_file}"))
+        print(f"   Format: JUnit XML")
 
 
 def main():
@@ -479,6 +605,12 @@ Examples:
 
   # Run automated tests with HTTP transport
   ./test-mcp.py --transport http --url https://cnpg-mcp.wat.im
+
+  # Save test results to JSON file
+  ./test-mcp.py --output results.json
+
+  # Save test results to JUnit XML (for CI/CD)
+  ./test-mcp.py --output results.xml --format junit
 
   # Launch Inspector UI for manual testing
   ./test-mcp.py --use-inspector
@@ -567,6 +699,18 @@ Notes:
         default='cnpg-mcp-cnpg-mcp',
         help='Kubernetes service name for port-forward (default: cnpg-mcp-cnpg-mcp)'
     )
+    parser.add_argument(
+        '-o', '--output',
+        dest='output_file',
+        help='Save test results to file (automated tests only)'
+    )
+    parser.add_argument(
+        '-f', '--format',
+        dest='output_format',
+        choices=['json', 'junit'],
+        default='json',
+        help='Output format for test results (default: json)'
+    )
 
     args = parser.parse_args()
 
@@ -578,7 +722,9 @@ Notes:
             url=args.url,
             token=args.token,
             token_file=args.token_file,
-            auth0_config_path=args.auth0_config
+            auth0_config_path=args.auth0_config,
+            output_file=args.output_file,
+            output_format=args.output_format
         ))
         sys.exit(exit_code)
 
