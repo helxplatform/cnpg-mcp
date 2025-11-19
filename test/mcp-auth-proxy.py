@@ -66,13 +66,21 @@ class AuthProxy:
         headers = dict(request.headers)
 
         # Remove headers we'll replace
+        # Note: HTTP headers are case-insensitive, but different libraries use different cases:
+        # - Starlette normalizes to lowercase when iterating: 'authorization', 'host'
+        # - Canonical form is capitalized: 'Authorization', 'Host'
+        # - nginx will reject requests with duplicate headers (even if different case)
+        # So we remove both cases to ensure no duplicates before adding our own
         headers.pop('host', None)
-        headers.pop('authorization', None)  # Remove any existing auth header
+        headers.pop('Host', None)
+        headers.pop('authorization', None)
         headers.pop('Authorization', None)
 
-        # Set correct Host header for backend
+        # Set correct Host header for backend (canonical capitalization)
         backend_host = urlparse(self.backend_url).netloc
         headers['Host'] = backend_host
+
+        # Set Authorization header with our user token (canonical capitalization)
         headers['Authorization'] = f'Bearer {self.token}'
 
         # Get request body
