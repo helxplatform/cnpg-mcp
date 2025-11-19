@@ -34,6 +34,56 @@ class Colors:
     def blue(text): return f"{Colors.BLUE}{text}{Colors.NC}"
 
 
+def get_user_token_interactive() -> Optional[str]:
+    """
+    Get user token by running get-user-token.py script.
+
+    This will open a browser for Auth0 login and return the token.
+
+    Returns:
+        Access token or None if failed
+    """
+    print()
+    print("=" * 70)
+    print(Colors.blue("🔐 USER AUTHENTICATION REQUIRED"))
+    print("=" * 70)
+    print()
+    print("The MCP server requires the 'openid' scope, which needs user login.")
+    print("Running get-user-token.py to authenticate...")
+    print()
+
+    # Run get-user-token.py
+    script_path = Path(__file__).parent / "get-user-token.py"
+
+    try:
+        result = subprocess.run(
+            [sys.executable, str(script_path)],
+            capture_output=False,  # Let it interact with user
+            text=True
+        )
+
+        if result.returncode != 0:
+            print()
+            print(Colors.red("❌ User authentication failed"))
+            return None
+
+        # Token should be saved to user-token.txt
+        token_file = Path("user-token.txt")
+        if token_file.exists():
+            token = token_file.read_text().strip()
+            print()
+            print(Colors.green("✅ User token obtained successfully"))
+            return token
+        else:
+            print()
+            print(Colors.red("❌ Token file not found after authentication"))
+            return None
+
+    except Exception as e:
+        print(Colors.red(f"❌ Error running get-user-token.py: {e}"))
+        return None
+
+
 def check_npx() -> bool:
     """Check if npx is available."""
     return shutil.which("npx") is not None
@@ -109,7 +159,8 @@ def get_token_from_auth0(config: Dict[str, Any]) -> Optional[str]:
                 "grant_type": "client_credentials",
                 "client_id": client_id,
                 "client_secret": client_secret,
-                "audience": audience
+                "audience": audience,
+                "scope": "openid mcp:read mcp:write"
             },
             timeout=10
         )
@@ -302,27 +353,7 @@ Notes:
 
         if args.cli:
             # CLI mode requires user token with openid scope
-            user_token_file = Path("tmp/user-token.txt")
-
-            if user_token_file.exists():
-                token = user_token_file.read_text().strip()
-                token_source = "tmp/user-token.txt (user authentication)"
-                print(Colors.green(f"✅ Using user token from {user_token_file}"))
-                print()
-            else:
-                print(Colors.yellow(f"⚠️  No user token found"))
-                print()
-                print("CLI mode requires user authentication (with 'openid' scope).")
-                print()
-                print("To get a user token, run:")
-                print("  ./test/get-user-token.py")
-                print()
-                print("Then try again:")
-                print(f"  {' '.join(sys.argv)}")
-                print()
-                sys.exit(1)
-        else:
-            # UI mode - try to get M2M token (user will configure headers manually)
+            # Try Auth0 first
             auth0_config = load_auth0_config(args.auth0_config)
 
             if auth0_config:
@@ -330,11 +361,52 @@ Notes:
                 print()
                 token = get_token_from_auth0(auth0_config)
                 if token:
-                    token_source = f"auto-obtained from {args.auth0_config}"
+                    token_source = f"auto-obtained from {args.auth0_config} (client credentials)"
                 else:
+                    print(Colors.yellow("⚠️  Client credentials failed (likely missing 'openid' scope)"))
                     print()
-                    print(Colors.yellow("⚠️  Could not automatically obtain token"))
-                    print()
+                    print("Attempting user authentication instead...")
+                    token = get_user_token_interactive()
+                    if token:
+                        token_source = "user authentication (Authorization Code Flow)"
+                    else:
+                        print()
+                        print(Colors.red("❌ Failed to obtain token via user authentication"))
+                        sys.exit(1)
+
+            if not token:
+                print(Colors.yellow(f"⚠️  No token available"))
+                print()
+                print("CLI mode requires user authentication (with 'openid' scope).")
+                print()
+                sys.exit(1)
+        else:
+            # UI mode - try client credentials, fall back to user auth if needed
+            auth0_config = load_auth0_config(args.auth0_config)
+
+            if auth0_config:
+                print(Colors.green(f"✅ Found {args.auth0_config}"))
+                print()
+                token = get_token_from_auth0(auth0_config)
+                if token:
+                    token_source = f"auto-obtained from {args.auth0_config} (client credentials)"
+                else:
+                    # If using proxy (which requires token), try user authentication
+                    if args.use_proxy:
+                        print(Colors.yellow("⚠️  Client credentials failed (likely missing 'openid' scope)"))
+                        print()
+                        print("Attempting user authentication instead...")
+                        token = get_user_token_interactive()
+                        if token:
+                            token_source = "user authentication (Authorization Code Flow)"
+                        else:
+                            print()
+                            print(Colors.red("❌ Failed to obtain token via user authentication"))
+                            sys.exit(1)
+                    else:
+                        print()
+                        print(Colors.yellow("⚠️  Could not automatically obtain token"))
+                        print()
             else:
                 print(Colors.yellow(f"⚠️  No {args.auth0_config} found"))
                 print()
@@ -418,6 +490,11 @@ Notes:
                     print("Run ./test/get-user-token.py first, or provide --token/--token-file")
                     sys.exit(1)
 
+                # Write token to file for proxy
+                token_file = Path("/tmp/mcp-user-token.txt")
+                token_file.write_text(token)
+                print(f"  Token written to {token_file}")
+
                 # Start auth proxy
                 print(Colors.green("Starting auth proxy..."))
                 proxy_cmd = [
@@ -425,18 +502,24 @@ Notes:
                     './test/mcp-auth-proxy.py',
                     '--backend', args.url,
                     '--port', str(args.proxy_port),
-                    '--token-file', 'tmp/user-token.txt'
+                    '--token-file', str(token_file)
                 ]
+                print(f"  Command: {' '.join(proxy_cmd)}")
 
                 proxy_proc = subprocess.Popen(
                     proxy_cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT
+                    # Let proxy output show directly
                 )
                 background_processes.append(('auth proxy', proxy_proc))
+                print(f"  PID: {proxy_proc.pid}")
 
                 # Wait a moment for proxy to start
                 time.sleep(2)
+
+                # Check if proxy is still running
+                if proxy_proc.poll() is not None:
+                    print(Colors.red(f"✗ Proxy exited with code {proxy_proc.returncode}"))
+                    sys.exit(1)
 
                 mcp_endpoint = f"http://localhost:{args.proxy_port}/mcp"
                 print(f"✅ Auth proxy running at http://localhost:{args.proxy_port}")

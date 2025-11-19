@@ -18,6 +18,7 @@ import asyncio
 import json
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 import httpx
 from starlette.applications import Starlette
@@ -33,27 +34,65 @@ class AuthProxy:
     def __init__(self, backend_url: str, token: str):
         self.backend_url = backend_url.rstrip('/')
         self.token = token
-        self.client = httpx.AsyncClient(timeout=300.0)
+        # Force HTTP/1.1 to match curl behavior
+        self.client = httpx.AsyncClient(timeout=300.0, http2=False)
 
     async def proxy_request(self, request: Request) -> Response:
         """Forward request to backend with authentication."""
 
-        # Build backend URL
         path = request.url.path
+
+        # Handle CORS preflight requests (don't forward to backend)
+        if request.method == "OPTIONS":
+            print(f"\n→ OPTIONS {path} (CORS preflight)", flush=True)
+            print(f"← 200 (CORS headers)", flush=True)
+            return Response(
+                status_code=200,
+                headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS",
+                    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+                    "Access-Control-Max-Age": "3600",
+                }
+            )
+
+        # Build backend URL
         query = str(request.url.query)
         backend_url = f"{self.backend_url}{path}"
         if query:
             backend_url += f"?{query}"
 
-        # Copy headers from request, add Authorization
+        # Copy headers from request, add Authorization and proper Host
         headers = dict(request.headers)
-        headers.pop('host', None)  # Remove host header
+
+        # Remove headers we'll replace
+        headers.pop('host', None)
+        headers.pop('authorization', None)  # Remove any existing auth header
+        headers.pop('Authorization', None)
+
+        # Set correct Host header for backend
+        backend_host = urlparse(self.backend_url).netloc
+        headers['Host'] = backend_host
         headers['Authorization'] = f'Bearer {self.token}'
 
         # Get request body
         body = await request.body()
 
-        print(f"→ {request.method} {path}")
+        # Debug output
+        print(f"\n→ {request.method} {path}", flush=True)
+        print(f"  Incoming headers from Inspector:", flush=True)
+        for key, value in request.headers.items():
+            print(f"    {key}: {value[:100] if len(value) > 100 else value}", flush=True)
+        print(f"  URL: {backend_url}", flush=True)
+        print(f"  Outgoing headers to backend:", flush=True)
+        for key, value in headers.items():
+            if key.lower() == 'authorization':
+                print(f"    {key}: Bearer {self.token[:20]}...{self.token[-10:]}", flush=True)
+            else:
+                print(f"    {key}: {value[:100] if len(value) > 100 else value}", flush=True)
+        print(f"  Body: {len(body)} bytes", flush=True)
+        if len(body) < 300:
+            print(f"  {body.decode('utf-8', errors='replace')}", flush=True)
 
         try:
             # Forward request to backend
@@ -65,12 +104,32 @@ class AuthProxy:
             )
 
             # Return response
-            print(f"← {backend_response.status_code} {path}")
+            print(f"← {backend_response.status_code} {path}", flush=True)
+            print(f"  Content-Type: {backend_response.headers.get('content-type', 'not set')}", flush=True)
+
+            # Read response content once
+            response_content = backend_response.content
+
+            # Show response body for debugging
+            try:
+                response_preview = response_content.decode('utf-8')[:500] if response_content else "no body"
+                if backend_response.status_code >= 400:
+                    print(f"  Error: {response_preview}", flush=True)
+                else:
+                    print(f"  Response: {response_preview}", flush=True)
+            except:
+                print(f"  Response: {len(response_content)} bytes (binary)", flush=True)
+
+            # Add CORS headers to response
+            response_headers = dict(backend_response.headers)
+            response_headers["Access-Control-Allow-Origin"] = "*"
+            response_headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, PATCH, OPTIONS"
+            response_headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
 
             return Response(
-                content=backend_response.content,
+                content=response_content,
                 status_code=backend_response.status_code,
-                headers=dict(backend_response.headers),
+                headers=response_headers,
             )
 
         except httpx.RequestError as e:
@@ -78,7 +137,10 @@ class AuthProxy:
             return Response(
                 content=json.dumps({"error": "proxy_error", "message": str(e)}),
                 status_code=502,
-                headers={"Content-Type": "application/json"}
+                headers={
+                    "Content-Type": "application/json",
+                    "Access-Control-Allow-Origin": "*",
+                }
             )
 
     async def health(self, request: Request) -> Response:
@@ -93,9 +155,9 @@ class AuthProxy:
         )
 
 
-def load_token() -> Optional[str]:
+def load_token(token_file_path: str = "/tmp/mcp-user-token.txt") -> Optional[str]:
     """Load user token from file."""
-    token_file = Path("user-token.txt")
+    token_file = Path(token_file_path)
     if token_file.exists():
         return token_file.read_text().strip()
     return None
@@ -142,8 +204,8 @@ The proxy automatically injects the Authorization header from user-token.txt.
     )
     parser.add_argument(
         '--token-file',
-        default='user-token.txt',
-        help='Token file path (default: user-token.txt)'
+        default='/tmp/mcp-user-token.txt',
+        help='Token file path (default: /tmp/mcp-user-token.txt)'
     )
 
     args = parser.parse_args()
@@ -153,7 +215,7 @@ The proxy automatically injects the Authorization header from user-token.txt.
         token = args.token.strip()
         print(f"✅ Using token from command line")
     else:
-        token = load_token()
+        token = load_token(args.token_file)
         if token:
             print(f"✅ Loaded token from {args.token_file}")
         else:
