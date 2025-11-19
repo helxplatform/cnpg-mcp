@@ -1,0 +1,31 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "cnpg-mcp.fullname" . }}-cnpg-view
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cnpg-mcp.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "cnpg-mcp.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: cnpg-cloudnative-pg-view
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "cnpg-mcp.fullname" . }}-cnpg-edit
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cnpg-mcp.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "cnpg-mcp.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: cnpg-cloudnative-pg-edit
+  apiGroup: rbac.authorization.k8s.io
