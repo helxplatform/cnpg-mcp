@@ -81,7 +81,7 @@ echo "Starting server..."
 echo "============================================"
 echo ""
 
-exec python cnpg_mcp_server.py \
+exec python ../src/cnpg_mcp_server.py \
     --transport http \
     --host "$DEFAULT_HOST" \
     --port "$DEFAULT_PORT"

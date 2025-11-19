@@ -20,26 +20,26 @@ This is a **Model Context Protocol (MCP) server** for managing PostgreSQL cluste
 
 ```bash
 # Default stdio transport (for Claude Desktop integration)
-python cnpg_mcp_server.py
+python src/cnpg_mcp_server.py
 
 # With specific transport mode
-python cnpg_mcp_server.py --transport stdio
+python src/cnpg_mcp_server.py --transport stdio
 
 # HTTP transport with OIDC authentication (recommended for production)
 # Requires OIDC_ISSUER and OIDC_AUDIENCE environment variables
 export OIDC_ISSUER=https://auth.example.com
 export OIDC_AUDIENCE=mcp-api
-python cnpg_mcp_server.py --transport http --port 3000
+python src/cnpg_mcp_server.py --transport http --port 3000
 
 # Or use the convenience script
-./start-http.sh
+./test/start-http.sh
 ```
 
 ### Testing
 
 ```bash
 # Syntax check
-python -m py_compile cnpg_mcp_server.py
+python -m py_compile src/cnpg_mcp_server.py
 
 # Test Kubernetes connectivity
 kubectl get nodes
@@ -133,7 +133,7 @@ CloudNativePG Operator
 
 ### Core Components
 
-**cnpg_mcp_server.py** (single-file architecture, ~1,746 lines):
+**src/cnpg_mcp_server.py** (single-file architecture, ~1,746 lines):
 - Lines 1-120: Imports, configuration, Kubernetes client initialization (lazy)
 - Lines 121-257: Utility functions and Kubernetes API helpers
 - Lines 258-466: Pydantic models for input validation (12 tools)
@@ -294,7 +294,7 @@ kubectl get secret <cluster-name>-app -o jsonpath='{.data.password}' | base64 -d
 - **HTTP (production-ready)**: Full production deployment with OIDC authentication using Streamable HTTP
   - Implemented in `run_http_transport()` at line ~2078
   - **MCP endpoint**: `/mcp` (standard path)
-  - **OIDC/OAuth2 authentication** using JWT bearer tokens (auth_oidc.py module)
+  - **OIDC/OAuth2 authentication** using JWT bearer tokens (src/auth_oidc.py module)
   - JWKS-based public key discovery with automatic rotation
   - Support for non-DCR IdPs via DCR proxy
   - Health check endpoint at `/health` (unauthenticated)
@@ -326,22 +326,22 @@ export OIDC_ISSUER=https://your-idp.example.com
 export OIDC_AUDIENCE=mcp-api
 
 # 2. Start server using convenience script
-./start-http.sh
+./test/start-http.sh
 
 # 3. Test with inspector tool
-./test-inspector.sh --transport http --url http://localhost:3000 --token <JWT>
+./test/test-inspector.sh --transport http --url http://localhost:3000 --token <JWT>
 ```
 
 **Supported OIDC Providers:**
 - Auth0, Keycloak, Okta, Azure AD, Google, any RFC 6749/OpenID Connect compliant IdP
 
-**For detailed setup instructions**, see `OIDC_SETUP.md`
+**For detailed setup instructions**, see `docs/OIDC_SETUP.md`
 
 **Files:**
-- `auth_oidc.py`: OIDC authentication provider implementation
-- `OIDC_SETUP.md`: Complete setup guide with IdP-specific examples
-- `start-http.sh`: Convenience script for HTTP mode startup
-- `test-inspector.sh`: Testing tool using MCP Inspector (supports stdio and HTTP)
+- `src/auth_oidc.py`: OIDC authentication provider implementation
+- `docs/OIDC_SETUP.md`: Complete setup guide with IdP-specific examples
+- `test/start-http.sh`: Convenience script for HTTP mode startup
+- `test/test-inspector.sh`: Testing tool using MCP Inspector (supports stdio and HTTP)
 - `kubernetes-deployment-oidc.yaml`: Production Kubernetes deployment manifest
 
 ### Kubernetes Configuration
@@ -418,22 +418,47 @@ python -c "from kubernetes import config; config.load_kube_config(); print('OK')
 
 ### Deployment Considerations
 
-- **Development**: Run locally with `python cnpg_mcp_server.py`
+- **Development**: Run locally with `python src/cnpg_mcp_server.py`
 - **Production**: Use kubernetes-deployment.yaml with proper RBAC
 - **Claude Desktop**: Configure in `claude_desktop_config.json` with absolute path
 - **Container**: Use provided Dockerfile (Python 3.11-slim base)
 
 ## File Organization
 
+### Server Source (`src/`)
 - **cnpg_mcp_server.py**: Main server implementation (single file)
-- **requirements.txt**: Python dependencies (core only, HTTP commented out)
+- **auth_oidc.py**: OIDC authentication provider
+
+### Testing (`test/`)
+- **test-inspector.py**: MCP inspector test tool
+- **test-inspector.sh**: Inspector test script
+- **start-http.sh**: HTTP mode startup script
+- **get-user-token.py**: OIDC token retrieval utility
+- **mcp-auth-proxy.py**: Auth proxy for testing
+- **test_*.py**: Unit tests
+
+### Utilities (`bin/`)
+- **add-user-to-allowed-clients.py**: OIDC user management
+- **fix-user-auth-connection.py**: OIDC connection fix utility
+- **make_config.py**: Configuration file generator
+- **setup-auth0.py**: Auth0 setup automation
+- **create_secrets.py**: Kubernetes secret generation
+
+### Documentation (`docs/`)
+- **QUICKSTART.md**: Quick start guide
+- **OIDC_SETUP.md**: OIDC authentication setup guide
+- **HTTP_TRANSPORT_GUIDE.md**: HTTP transport implementation guide
+- **REFACTORING_SUMMARY.md**: Transport-agnostic refactoring notes
+- Additional guides and release notes
+
+### Configuration
+- **requirements.txt**: Python dependencies
 - **rbac.yaml**: Kubernetes RBAC configuration
 - **example-cluster.yaml**: Sample PostgreSQL cluster manifest
-- **kubernetes-deployment.yaml**: K8s Deployment and Service for the MCP server
+- **kubernetes-deployment.yaml**: K8s Deployment and Service
+- **kubernetes-deployment-oidc.yaml**: Production deployment with OIDC
 - **Dockerfile**: Container image definition
-- **QUICKSTART.md**: Quick start guide for new users
-- **HTTP_TRANSPORT_GUIDE.md**: Guide for implementing HTTP transport
-- **REFACTORING_SUMMARY.md**: Explains transport-agnostic refactoring
+- **Makefile**: Build and deployment automation
 
 ## Related Resources
 

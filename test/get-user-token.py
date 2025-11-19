@@ -50,7 +50,10 @@ class CallbackHandler(BaseHTTPRequestHandler):
 
             html = """
             <html>
-            <head><title>Authentication Successful</title></head>
+            <head>
+                <meta charset="UTF-8">
+                <title>Authentication Successful</title>
+            </head>
             <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
                 <h1 style="color: green;">✅ Authentication Successful!</h1>
                 <p>You can close this window and return to the terminal.</p>
@@ -62,7 +65,7 @@ class CallbackHandler(BaseHTTPRequestHandler):
             </body>
             </html>
             """
-            self.wfile.write(html.encode())
+            self.wfile.write(html.encode('utf-8'))
 
         elif 'error' in params:
             # Error during authorization
@@ -74,7 +77,10 @@ class CallbackHandler(BaseHTTPRequestHandler):
 
             html = f"""
             <html>
-            <head><title>Authentication Failed</title></head>
+            <head>
+                <meta charset="UTF-8">
+                <title>Authentication Failed</title>
+            </head>
             <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
                 <h1 style="color: red;">❌ Authentication Failed</h1>
                 <p>{auth_error}</p>
@@ -82,7 +88,7 @@ class CallbackHandler(BaseHTTPRequestHandler):
             </body>
             </html>
             """
-            self.wfile.write(html.encode())
+            self.wfile.write(html.encode('utf-8'))
 
         else:
             # Unexpected request
@@ -286,13 +292,13 @@ def get_user_token_pkce(
                 print(f"   (Could not decode ID token: {e})")
                 print()
 
-        # Save tokens to files
-        token_file = Path("user-token.txt")
+        # Save tokens to files in /tmp
+        token_file = Path("/tmp/user-token.txt")
         token_file.write_text(access_token)
         print(f"💾 Access token saved to: {token_file}")
 
         if refresh_token:
-            refresh_file = Path("refresh-token.txt")
+            refresh_file = Path("/tmp/refresh-token.txt")
             refresh_file.write_text(refresh_token)
             print(f"💾 Refresh token saved to: {refresh_file}")
 
@@ -368,11 +374,11 @@ def main():
         print()
         print("  ./test-inspector.py --transport http \\")
         print("    --url https://cnpg-mcp.wat.im \\")
-        print("    --token-file user-token.txt")
+        print("    --token-file /tmp/user-token.txt")
         print()
         print("Or use curl:")
         print()
-        print("  curl -H 'Authorization: Bearer $(cat user-token.txt)' \\")
+        print("  curl -H 'Authorization: Bearer $(cat /tmp/user-token.txt)' \\")
         print("    https://cnpg-mcp.wat.im/mcp")
         print()
         return 0

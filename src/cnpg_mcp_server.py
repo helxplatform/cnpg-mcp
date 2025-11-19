@@ -2210,10 +2210,10 @@ def parse_args():
         epilog="""
 Examples:
   # Run with stdio transport (default, for Claude Desktop)
-  python cnpg_mcp_server.py
+  python src/cnpg_mcp_server.py
   
   # Run with HTTP transport (future)
-  python cnpg_mcp_server.py --transport http --port 3000
+  python src/cnpg_mcp_server.py --transport http --port 3000
   
 Environment Variables:
   KUBECONFIG        Path to kubernetes config file

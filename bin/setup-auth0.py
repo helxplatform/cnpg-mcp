@@ -509,7 +509,7 @@ class Auth0MCPSetup:
                     ],
                     "token_endpoint_auth_method": "none",  # PKCE instead of client secret
                     "callbacks": [
-                        "http://localhost:8888/callback",  # For get-user-token.py
+                        "http://localhost:8888/callback",  # For test/get-user-token.py
                         "http://localhost:8889/callback",  # Alternate port
                         "http://127.0.0.1:8888/callback",  # IPv4 explicit
                     ],
