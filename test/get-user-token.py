@@ -50,7 +50,10 @@ class CallbackHandler(BaseHTTPRequestHandler):
 
             html = """
             <html>
-            <head><title>Authentication Successful</title></head>
+            <head>
+                <meta charset="UTF-8">
+                <title>Authentication Successful</title>
+            </head>
             <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
                 <h1 style="color: green;">✅ Authentication Successful!</h1>
                 <p>You can close this window and return to the terminal.</p>
@@ -62,7 +65,7 @@ class CallbackHandler(BaseHTTPRequestHandler):
             </body>
             </html>
             """
-            self.wfile.write(html.encode())
+            self.wfile.write(html.encode('utf-8'))
 
         elif 'error' in params:
             # Error during authorization
@@ -74,7 +77,10 @@ class CallbackHandler(BaseHTTPRequestHandler):
 
             html = f"""
             <html>
-            <head><title>Authentication Failed</title></head>
+            <head>
+                <meta charset="UTF-8">
+                <title>Authentication Failed</title>
+            </head>
             <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
                 <h1 style="color: red;">❌ Authentication Failed</h1>
                 <p>{auth_error}</p>
@@ -82,7 +88,7 @@ class CallbackHandler(BaseHTTPRequestHandler):
             </body>
             </html>
             """
-            self.wfile.write(html.encode())
+            self.wfile.write(html.encode('utf-8'))
 
         else:
             # Unexpected request
