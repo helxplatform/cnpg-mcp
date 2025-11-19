@@ -19,13 +19,64 @@ import secrets
 import string
 import base64
 import yaml
+import logging
+import warnings
 from typing import Any, Dict, List, Optional, Literal
 from datetime import datetime
+from pathlib import Path
 
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
+
+# Suppress deprecation warnings from uvicorn's websocket dependencies
+# These are not from our code and will be fixed when uvicorn updates
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="websockets")
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="uvicorn.protocols.websockets")
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(levelname)s:     %(message)s',
+    handlers=[logging.StreamHandler(sys.stderr)]
+)
+logger = logging.getLogger(__name__)
+
+# Set log levels for external libraries to reduce noise
+logging.getLogger("httpx").setLevel(logging.WARNING)  # Suppress HTTP request logs
+# Note: mcp logger kept at INFO to show "Processing request of type X" logs
+
+
+# Filter to suppress verbose logs
+class VerboseLogsFilter(logging.Filter):
+    """Filter out repetitive/verbose logs to reduce noise."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+
+        # Suppress health check and MCP endpoint access logs (redundant with request type logs)
+        if any(x in message for x in ["/healthz", "/readyz", "/mcp"]):
+            return False
+
+        # Suppress scope validation logs (every request)
+        if "Scope validation:" in message:
+            return False
+
+        # Suppress session creation/termination (very frequent)
+        if any(x in message for x in [
+            "Created new transport with session ID:",
+            "Terminating session:"
+        ]):
+            return False
+
+        return True
+
+
+# Apply filters to reduce log noise
+logging.getLogger("uvicorn.access").addFilter(VerboseLogsFilter())
+logging.getLogger("auth_oidc").addFilter(VerboseLogsFilter())
+logging.getLogger("mcp").addFilter(VerboseLogsFilter())
 
 # ============================================================================
 # Configuration and Constants
@@ -75,11 +126,11 @@ def get_kubernetes_clients() -> tuple[client.CustomObjectsApi, client.CoreV1Api]
 
     try:
         config.load_incluster_config()
-        print("Loaded in-cluster Kubernetes config", file=sys.stderr)
+        logger.info("Loaded in-cluster Kubernetes config")
     except config.ConfigException:
         try:
             config.load_kube_config()
-            print("Loaded kubeconfig from file", file=sys.stderr)
+            logger.info("Loaded kubeconfig from file")
         except Exception as e:
             _k8s_init_error = (
                 f"Failed to load Kubernetes configuration: {e}\n\n"
@@ -89,7 +140,7 @@ def get_kubernetes_clients() -> tuple[client.CustomObjectsApi, client.CoreV1Api]
                 "3. Running inside a Kubernetes cluster with proper service account\n\n"
                 "You can test your kubectl access with: kubectl cluster-info"
             )
-            print(f"Kubernetes initialization failed: {_k8s_init_error}", file=sys.stderr)
+            logger.error(f"Kubernetes initialization failed: {_k8s_init_error}")
             raise Exception(_k8s_init_error)
 
     custom_api = client.CustomObjectsApi()
@@ -102,20 +153,31 @@ def get_current_namespace() -> str:
     """
     Get the current namespace from the Kubernetes context.
 
-    Returns the namespace from the current context in kubeconfig, or 'default'
-    if no namespace is specified in the context or if in-cluster config is used.
+    Returns the namespace from the current context in kubeconfig, or reads from
+    the pod's service account namespace file when running in-cluster.
     """
+    # First, try to read from pod's service account namespace (in-cluster)
+    namespace_file = Path("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+    if namespace_file.exists():
+        try:
+            namespace = namespace_file.read_text().strip()
+            logger.info(f"Using namespace from service account: {namespace}")
+            return namespace
+        except Exception as e:
+            logger.warning(f"Could not read namespace file: {e}")
+
+    # Fall back to kubeconfig context
     try:
-        # Try to get the current context from kubeconfig
         contexts, active_context = config.list_kube_config_contexts()
         if active_context and 'namespace' in active_context.get('context', {}):
             namespace = active_context['context']['namespace']
-            print(f"Using namespace from context: {namespace}", file=sys.stderr)
+            logger.info(f"Using namespace from kubeconfig context: {namespace}")
             return namespace
     except Exception as e:
-        # If we can't get the context (e.g., in-cluster config), fall back to default
-        print(f"Could not get namespace from context: {e}, using 'default'", file=sys.stderr)
+        logger.debug(f"Could not get namespace from kubeconfig context: {e}")
 
+    # Last resort: default namespace
+    logger.info("Using default namespace")
     return "default"
 
 
@@ -2067,9 +2129,9 @@ async def run_stdio_transport():
 
     FastMCP simplifies this - use run_stdio_async() for existing event loops!
     """
-    print("Starting CloudNativePG MCP server with stdio transport...", file=sys.stderr)
-    print(f"Python version: {sys.version}", file=sys.stderr)
-    print(f"FastMCP server initialized with name: cloudnative-pg", file=sys.stderr)
+    logger.info("Starting CloudNativePG MCP server with stdio transport...")
+    logger.info(f"Python version: {sys.version}")
+    logger.info("FastMCP server initialized with name: cloudnative-pg")
 
     # Use run_stdio_async() since we're already in an asyncio event loop
     await mcp.run_stdio_async()
@@ -2090,9 +2152,9 @@ async def run_http_transport(host: str = "0.0.0.0", port: int = 4204):
         DCR_PROXY_URL: Optional DCR proxy for client registration
         OIDC_SCOPE: Required scope (default: openid)
     """
-    print(f"Starting CloudNativePG MCP server with HTTP transport on {host}:{port}...", file=sys.stderr)
-    print(f"FastMCP server initialized with name: cloudnative-pg", file=sys.stderr)
-    print(f"MCP endpoint available at: http://{host}:{port}/mcp", file=sys.stderr)
+    logger.info(f"Starting CloudNativePG MCP server with HTTP transport on {host}:{port}...")
+    logger.info("FastMCP server initialized with name: cloudnative-pg")
+    logger.info(f"MCP endpoint available at: http://{host}:{port}/mcp")
 
     # Initialize OIDC authentication if configured
     auth_provider = None
@@ -2108,7 +2170,7 @@ async def run_http_transport(host: str = "0.0.0.0", port: int = 4204):
             from auth_oidc import OIDCAuthProvider, OIDCAuthMiddleware
             from starlette.middleware import Middleware
 
-            print("Initializing OIDC authentication...", file=sys.stderr)
+            logger.info("Initializing OIDC authentication...")
             # OIDCAuthProvider will check config file first, then env vars
             auth_provider = OIDCAuthProvider()
 
@@ -2122,20 +2184,20 @@ async def run_http_transport(host: str = "0.0.0.0", port: int = 4204):
                 )
             )
 
-            print(f"✓ OIDC authentication enabled", file=sys.stderr)
-            print(f"  Issuer: {auth_provider.issuer}", file=sys.stderr)
-            print(f"  Audience: {auth_provider.audience}", file=sys.stderr)
+            logger.info("✓ OIDC authentication enabled")
+            logger.info(f"  Issuer: {auth_provider.issuer}")
+            logger.info(f"  Audience: {auth_provider.audience}")
 
         except Exception as e:
-            print(f"ERROR: Failed to initialize OIDC authentication: {e}", file=sys.stderr)
-            print("Server will NOT start without valid OIDC configuration.", file=sys.stderr)
+            logger.error(f"Failed to initialize OIDC authentication: {e}")
+            logger.error("Server will NOT start without valid OIDC configuration.")
             raise
     else:
-        print("WARNING: OIDC authentication NOT configured!", file=sys.stderr)
-        print("Provide OIDC config via:", file=sys.stderr)
-        print("  1. Config file at /etc/mcp/oidc.yaml (recommended for Kubernetes)", file=sys.stderr)
-        print("  2. Environment variables: OIDC_ISSUER and OIDC_AUDIENCE", file=sys.stderr)
-        print("Running in INSECURE mode (development only).", file=sys.stderr)
+        logger.warning("OIDC authentication NOT configured!")
+        logger.warning("Provide OIDC config via:")
+        logger.warning("  1. Config file at /etc/mcp/oidc.yaml (recommended for Kubernetes)")
+        logger.warning("  2. Environment variables: OIDC_ISSUER and OIDC_AUDIENCE")
+        logger.warning("Running in INSECURE mode (development only).")
 
     # Get Starlette app without middleware
     # Use "http" transport (Streamable HTTP) with /mcp endpoint
@@ -2255,13 +2317,13 @@ async def main():
         elif args.transport == "http":
             await run_http_transport(host=args.host, port=args.port)
         else:
-            print(f"Unknown transport mode: {args.transport}", file=sys.stderr)
+            logger.error(f"Unknown transport mode: {args.transport}")
             sys.exit(1)
-            
+
     except KeyboardInterrupt:
-        print("\nShutting down gracefully...", file=sys.stderr)
+        logger.info("\nShutting down gracefully...")
     except Exception as e:
-        print(f"Fatal error: {e}", file=sys.stderr)
+        logger.error(f"Fatal error: {e}")
         import traceback
         traceback.print_exc(file=sys.stderr)
         sys.exit(1)
