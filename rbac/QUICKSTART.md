@@ -81,7 +81,7 @@ pip install -r requirements.txt
 
 Run a quick syntax check:
 ```bash
-python -m py_compile cnpg_mcp_server.py
+python -m py_compile src/cnpg_mcp_server.py
 ```
 
 ## Step 5: Create a Test Cluster
@@ -109,7 +109,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
   "mcpServers": {
     "cloudnative-pg": {
       "command": "python",
-      "args": ["/absolute/path/to/cnpg_mcp_server.py"]
+      "args": ["/absolute/path/to/src/cnpg_mcp_server.py"]
     }
   }
 }
@@ -121,7 +121,7 @@ Restart Claude Desktop.
 
 ```bash
 # The server will run and wait for MCP requests
-python cnpg_mcp_server.py
+python src/cnpg_mcp_server.py
 ```
 
 ## Step 7: Test with Claude
@@ -183,7 +183,7 @@ This is normal - the server waits for MCP requests. Run in background or use Cla
 ## Next Steps
 
 1. **Read the full README** for advanced configuration
-2. **Explore tool functions** in `cnpg_mcp_server.py`
+2. **Explore tool functions** in `src/cnpg_mcp_server.py`
 3. **Add custom tools** for your specific workflows
 4. **Deploy to Kubernetes** using `kubernetes-deployment.yaml`
 5. **Set up backups** following CloudNativePG documentation

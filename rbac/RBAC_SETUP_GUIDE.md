@@ -386,7 +386,7 @@ After running the setup script, configure the MCP server to use the service acco
   "mcpServers": {
     "cloudnative-pg": {
       "command": "python",
-      "args": ["/path/to/cnpg_mcp_server.py"],
+      "args": ["/path/to/src/cnpg_mcp_server.py"],
       "env": {
         "KUBECONFIG": "/path/to/.kube/config"
       }

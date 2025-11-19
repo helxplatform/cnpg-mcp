@@ -29,7 +29,7 @@ config: make.env ## Generate make.env configuration file
 
 make.env:
 	@echo "Generating make.env configuration..."
-	python3 make_config.py
+	python3 bin/make_config.py
 	@echo "Configuration generated. Edit make.env to customize settings."
 
 .PHONY: config-show
@@ -147,18 +147,18 @@ helm-values: ## Show Helm values
 .PHONY: dev-start-http
 dev-start-http: ## Start server in HTTP mode (local development)
 	@echo "Starting server in HTTP mode..."
-	./start-http.sh
+	./test/start-http.sh
 
 .PHONY: dev-test-stdio
 dev-test-stdio: ## Test server with stdio transport
 	@echo "Testing server with stdio transport..."
-	./test-inspector.sh --transport stdio
+	./test/test-inspector.sh --transport stdio
 
 .PHONY: dev-test-http
 dev-test-http: ## Test server with HTTP transport
 	@echo "Testing server with HTTP transport..."
 	@echo "Note: Requires server to be running (make dev-start-http)"
-	./test-inspector.sh --transport http --url http://localhost:4204
+	./test/test-inspector.sh --transport http --url http://localhost:4204
 
 #
 # Kubernetes development targets

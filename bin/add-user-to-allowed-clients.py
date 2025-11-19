@@ -144,7 +144,7 @@ def main():
     print("=" * 70)
     print()
     print("Run:")
-    print("  ./get-user-token.py")
+    print("  ./test/test/get-user-token.py")
     print()
 
 

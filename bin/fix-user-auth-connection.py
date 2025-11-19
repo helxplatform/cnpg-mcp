@@ -185,7 +185,7 @@ def main():
 
                 if patch_response.status_code == 200:
                     print("✅ Connection promoted to tenant-level!")
-                    print("   Try get-user-token.py again")
+                    print("   Try test/get-user-token.py again")
                 else:
                     print(f"❌ Failed to promote: {patch_response.text}")
         else:
@@ -205,7 +205,7 @@ def main():
             if patch_response.status_code == 200:
                 print("✅ Enabled connection for user auth client!")
                 print()
-                print("Try get-user-token.py again")
+                print("Try test/get-user-token.py again")
             else:
                 print(f"❌ Failed to enable: {patch_response.text}")
 

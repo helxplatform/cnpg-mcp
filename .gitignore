@@ -10,6 +10,8 @@ output
 auth
 token.txt
 *.tgz
+tmp
+results.json
 
 # OS generated files #
 ######################
