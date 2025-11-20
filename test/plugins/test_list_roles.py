@@ -1,25 +1,38 @@
-"""Test plugin for list_postgres_clusters tool."""
+"""Test plugin for list_postgres_roles tool."""
 
 import time
-from . import TestPlugin, TestResult, check_for_operational_error
+from . import TestPlugin, TestResult, check_for_operational_error, shared_test_state
 
 
-class ListClustersTest(TestPlugin):
-    """Test the list_postgres_clusters tool."""
+class ListRolesTest(TestPlugin):
+    """Test the list_postgres_roles tool."""
 
-    tool_name = "list_postgres_clusters"
-    description = "Test listing PostgreSQL clusters"
-    depends_on = ["ServerInfoTest"]  # Verify server responds first
+    tool_name = "list_postgres_roles"
+    description = "Test listing PostgreSQL roles/users"
+    depends_on = ["CreatePostgresClusterTest"]  # Use shared test cluster
 
     async def test(self, session) -> TestResult:
-        """Test list_postgres_clusters tool."""
+        """Test list_postgres_roles tool."""
         start_time = time.time()
 
         try:
-            # Call the tool
+            # Use the shared test cluster
+            cluster_name = shared_test_state.get("test_cluster_name")
+
+            if not cluster_name:
+                return TestResult(
+                    plugin_name=self.get_name(),
+                    tool_name=self.tool_name,
+                    passed=False,
+                    message="No shared test cluster available",
+                    error="CreatePostgresClusterTest must run first and succeed",
+                    duration_ms=(time.time() - start_time) * 1000
+                )
+
+            # Call list_postgres_roles
             result = await session.call_tool(
                 self.tool_name,
-                arguments={}
+                arguments={"cluster_name": cluster_name}
             )
 
             # Check if we got a response
@@ -38,8 +51,8 @@ class ListClustersTest(TestPlugin):
                 if hasattr(content, 'text'):
                     response_text += content.text
 
-            # Basic validation - should have some text
-            if len(response_text) < 10:
+            # Basic validation
+            if len(response_text) < 5:
                 return TestResult(
                     plugin_name=self.get_name(),
                     tool_name=self.tool_name,
@@ -48,7 +61,7 @@ class ListClustersTest(TestPlugin):
                     duration_ms=(time.time() - start_time) * 1000
                 )
 
-            # Check for operational errors (e.g., RBAC issues, connection failures)
+            # Check for operational errors
             is_error, error_msg = check_for_operational_error(response_text)
             if is_error:
                 return TestResult(
@@ -60,12 +73,13 @@ class ListClustersTest(TestPlugin):
                     duration_ms=(time.time() - start_time) * 1000
                 )
 
-            # Success!
+            # Success! (even if no roles found, that's a valid response)
+            role_count = response_text.lower().count("role:")
             return TestResult(
                 plugin_name=self.get_name(),
                 tool_name=self.tool_name,
                 passed=True,
-                message=f"Successfully listed clusters ({len(response_text)} chars)",
+                message=f"Successfully listed roles for '{cluster_name}' ({role_count} roles)",
                 duration_ms=(time.time() - start_time) * 1000
             )
 

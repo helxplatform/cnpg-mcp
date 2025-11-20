@@ -209,6 +209,48 @@ def get_token_from_auth0(config: Dict[str, Any]) -> Optional[str]:
         return None
 
 
+def topological_sort_plugins(plugins: List) -> List:
+    """
+    Sort plugins based on dependencies using topological sort.
+
+    Considers both 'depends_on' (hard dependencies) and 'run_after' (soft dependencies)
+    for ordering purposes.
+
+    Args:
+        plugins: List of plugin instances
+
+    Returns:
+        Sorted list of plugins (dependencies first)
+    """
+    # Build a map of plugin name to plugin instance
+    plugin_map = {p.get_name(): p for p in plugins}
+
+    # Build dependency graph
+    visited = set()
+    result = []
+
+    def visit(plugin):
+        """Depth-first visit for topological sort."""
+        if plugin.get_name() in visited:
+            return
+
+        visited.add(plugin.get_name())
+
+        # Visit both hard dependencies (depends_on) and soft dependencies (run_after) first
+        all_deps = list(set(plugin.depends_on + plugin.run_after))
+        for dep_name in all_deps:
+            if dep_name in plugin_map:
+                visit(plugin_map[dep_name])
+
+        result.append(plugin)
+
+    # Visit all plugins
+    for plugin in plugins:
+        visit(plugin)
+
+    return result
+
+
 def discover_plugins(plugins_dir: Path) -> List:
     """Discover all test plugins in the plugins directory."""
     plugins = []
@@ -235,6 +277,9 @@ def discover_plugins(plugins_dir: Path) -> List:
 
         except Exception as e:
             print(Colors.yellow(f"⚠️  Failed to load plugin {plugin_file.name}: {e}"))
+
+    # Sort plugins based on dependencies
+    plugins = topological_sort_plugins(plugins)
 
     return plugins
 
@@ -441,9 +486,29 @@ async def run_plugin_tests(session, plugins: List) -> tuple[int, List]:
     results = []
     passed = 0
     failed = 0
+    failed_tests = set()  # Track which tests failed
 
     for plugin in plugins:
-        print(f"▶️  {plugin.get_name()}...", end=" ", flush=True)
+        plugin_name = plugin.get_name()
+
+        # Check if any dependencies failed
+        deps_failed = [dep for dep in plugin.depends_on if dep in failed_tests]
+        if deps_failed:
+            print(f"⏭️  {plugin_name}... ", end="")
+            print(Colors.yellow(f"SKIPPED (dependency failed: {', '.join(deps_failed)})"))
+            print()
+            from plugins import TestResult
+            results.append(TestResult(
+                plugin_name=plugin_name,
+                tool_name=plugin.tool_name,
+                passed=False,
+                message=f"Skipped because dependency failed: {', '.join(deps_failed)}"
+            ))
+            failed += 1
+            failed_tests.add(plugin_name)
+            continue
+
+        print(f"▶️  {plugin_name}...", end=" ", flush=True)
 
         try:
             result = await plugin.test(session)
@@ -455,6 +520,7 @@ async def run_plugin_tests(session, plugins: List) -> tuple[int, List]:
             else:
                 print(Colors.red("❌ FAIL"))
                 failed += 1
+                failed_tests.add(plugin_name)
 
             # Show details
             if result.duration_ms:
@@ -469,11 +535,12 @@ async def run_plugin_tests(session, plugins: List) -> tuple[int, List]:
             print(Colors.red(f"   Unexpected error: {e}"))
             print()
             failed += 1
+            failed_tests.add(plugin_name)
 
             # Create a failed result for the exception
             from plugins import TestResult
             results.append(TestResult(
-                plugin_name=plugin.get_name(),
+                plugin_name=plugin_name,
                 tool_name=plugin.tool_name,
                 passed=False,
                 message=f"Unexpected exception during test",
