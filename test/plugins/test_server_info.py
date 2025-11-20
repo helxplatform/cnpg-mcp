@@ -5,10 +5,11 @@ from . import TestPlugin, TestResult
 
 
 class ServerInfoTest(TestPlugin):
-    """Test server initialization and basic info."""
+    """Test server initialization and basic info. Runs first."""
 
     tool_name = "server_init"
     description = "Test server initialization and capabilities"
+    depends_on = []  # No dependencies - this is the first test
 
     async def test(self, session) -> TestResult:
         """Test server initialization."""

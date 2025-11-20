@@ -1,25 +1,38 @@
-"""Test plugin for list_postgres_clusters tool."""
+"""Test plugin for get_cluster_status tool."""
 
 import time
-from . import TestPlugin, TestResult, check_for_operational_error
+from . import TestPlugin, TestResult, check_for_operational_error, shared_test_state
 
 
-class ListClustersTest(TestPlugin):
-    """Test the list_postgres_clusters tool."""
+class GetClusterStatusTest(TestPlugin):
+    """Test the get_cluster_status tool."""
 
-    tool_name = "list_postgres_clusters"
-    description = "Test listing PostgreSQL clusters"
-    depends_on = ["ServerInfoTest"]  # Verify server responds first
+    tool_name = "get_cluster_status"
+    description = "Test getting cluster status details"
+    depends_on = ["CreatePostgresClusterTest"]  # Use shared test cluster
 
     async def test(self, session) -> TestResult:
-        """Test list_postgres_clusters tool."""
+        """Test get_cluster_status tool."""
         start_time = time.time()
 
         try:
-            # Call the tool
+            # Use the shared test cluster
+            cluster_name = shared_test_state.get("test_cluster_name")
+
+            if not cluster_name:
+                return TestResult(
+                    plugin_name=self.get_name(),
+                    tool_name=self.tool_name,
+                    passed=False,
+                    message="No shared test cluster available",
+                    error="CreatePostgresClusterTest must run first and succeed",
+                    duration_ms=(time.time() - start_time) * 1000
+                )
+
+            # Call get_cluster_status
             result = await session.call_tool(
                 self.tool_name,
-                arguments={}
+                arguments={"name": cluster_name}
             )
 
             # Check if we got a response
@@ -38,7 +51,7 @@ class ListClustersTest(TestPlugin):
                 if hasattr(content, 'text'):
                     response_text += content.text
 
-            # Basic validation - should have some text
+            # Basic validation
             if len(response_text) < 10:
                 return TestResult(
                     plugin_name=self.get_name(),
@@ -48,7 +61,7 @@ class ListClustersTest(TestPlugin):
                     duration_ms=(time.time() - start_time) * 1000
                 )
 
-            # Check for operational errors (e.g., RBAC issues, connection failures)
+            # Check for operational errors
             is_error, error_msg = check_for_operational_error(response_text)
             if is_error:
                 return TestResult(
@@ -60,12 +73,22 @@ class ListClustersTest(TestPlugin):
                     duration_ms=(time.time() - start_time) * 1000
                 )
 
+            # Verify response contains expected status information
+            if not any(keyword in response_text.lower() for keyword in ["status", "instances", "ready"]):
+                return TestResult(
+                    plugin_name=self.get_name(),
+                    tool_name=self.tool_name,
+                    passed=False,
+                    message="Response missing expected status keywords",
+                    duration_ms=(time.time() - start_time) * 1000
+                )
+
             # Success!
             return TestResult(
                 plugin_name=self.get_name(),
                 tool_name=self.tool_name,
                 passed=True,
-                message=f"Successfully listed clusters ({len(response_text)} chars)",
+                message=f"Successfully got status for cluster '{cluster_name}'",
                 duration_ms=(time.time() - start_time) * 1000
             )
 
