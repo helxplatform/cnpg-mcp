@@ -14,10 +14,25 @@ pyyaml>=6.0.0
 asyncio
 
 # ============================================================================
-# Optional: HTTP/SSE Transport (uncomment when using HTTP mode)
+# HTTP/SSE Transport Dependencies
 # ============================================================================
-# FastMCP includes HTTP/SSE support, but you may need additional dependencies:
-# uvicorn>=0.27.0  # ASGI server for production HTTP deployment
-# python-multipart>=0.0.6  # For file uploads if needed
-#
-# Note: FastMCP handles SSE transport internally, no need for mcp[sse] or starlette
+# ASGI server for production HTTP deployment
+uvicorn[standard]>=0.27.0
+
+# ASGI framework (required for middleware)
+starlette>=0.35.0
+
+# HTTP client for OIDC/JWKS fetching
+httpx>=0.25.0
+
+# ============================================================================
+# OIDC/OAuth2 Authentication Dependencies
+# ============================================================================
+# OAuth2/OIDC library with JWT support
+authlib>=1.3.0
+
+# Cryptography for JWT verification
+cryptography>=41.0.0
+
+requests
+python-dotenv

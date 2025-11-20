@@ -13,18 +13,70 @@ Transport Modes:
 import asyncio
 import json
 import sys
+import os
 import argparse
 import secrets
 import string
 import base64
 import yaml
+import logging
+import warnings
 from typing import Any, Dict, List, Optional, Literal
 from datetime import datetime
+from pathlib import Path
 
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
+
+# Suppress deprecation warnings from uvicorn's websocket dependencies
+# These are not from our code and will be fixed when uvicorn updates
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="websockets")
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="uvicorn.protocols.websockets")
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(levelname)s:     %(message)s',
+    handlers=[logging.StreamHandler(sys.stderr)]
+)
+logger = logging.getLogger(__name__)
+
+# Set log levels for external libraries to reduce noise
+logging.getLogger("httpx").setLevel(logging.WARNING)  # Suppress HTTP request logs
+# Note: mcp logger kept at INFO to show "Processing request of type X" logs
+
+
+# Filter to suppress verbose logs
+class VerboseLogsFilter(logging.Filter):
+    """Filter out repetitive/verbose logs to reduce noise."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+
+        # Suppress health check and MCP endpoint access logs (redundant with request type logs)
+        if any(x in message for x in ["/healthz", "/readyz", "/mcp"]):
+            return False
+
+        # Suppress scope validation logs (every request)
+        if "Scope validation:" in message:
+            return False
+
+        # Suppress session creation/termination (very frequent)
+        if any(x in message for x in [
+            "Created new transport with session ID:",
+            "Terminating session:"
+        ]):
+            return False
+
+        return True
+
+
+# Apply filters to reduce log noise
+logging.getLogger("uvicorn.access").addFilter(VerboseLogsFilter())
+logging.getLogger("auth_oidc").addFilter(VerboseLogsFilter())
+logging.getLogger("mcp").addFilter(VerboseLogsFilter())
 
 # ============================================================================
 # Configuration and Constants
@@ -74,11 +126,11 @@ def get_kubernetes_clients() -> tuple[client.CustomObjectsApi, client.CoreV1Api]
 
     try:
         config.load_incluster_config()
-        print("Loaded in-cluster Kubernetes config", file=sys.stderr)
+        logger.info("Loaded in-cluster Kubernetes config")
     except config.ConfigException:
         try:
             config.load_kube_config()
-            print("Loaded kubeconfig from file", file=sys.stderr)
+            logger.info("Loaded kubeconfig from file")
         except Exception as e:
             _k8s_init_error = (
                 f"Failed to load Kubernetes configuration: {e}\n\n"
@@ -88,7 +140,7 @@ def get_kubernetes_clients() -> tuple[client.CustomObjectsApi, client.CoreV1Api]
                 "3. Running inside a Kubernetes cluster with proper service account\n\n"
                 "You can test your kubectl access with: kubectl cluster-info"
             )
-            print(f"Kubernetes initialization failed: {_k8s_init_error}", file=sys.stderr)
+            logger.error(f"Kubernetes initialization failed: {_k8s_init_error}")
             raise Exception(_k8s_init_error)
 
     custom_api = client.CustomObjectsApi()
@@ -101,20 +153,31 @@ def get_current_namespace() -> str:
     """
     Get the current namespace from the Kubernetes context.
 
-    Returns the namespace from the current context in kubeconfig, or 'default'
-    if no namespace is specified in the context or if in-cluster config is used.
+    Returns the namespace from the current context in kubeconfig, or reads from
+    the pod's service account namespace file when running in-cluster.
     """
+    # First, try to read from pod's service account namespace (in-cluster)
+    namespace_file = Path("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+    if namespace_file.exists():
+        try:
+            namespace = namespace_file.read_text().strip()
+            logger.info(f"Using namespace from service account: {namespace}")
+            return namespace
+        except Exception as e:
+            logger.warning(f"Could not read namespace file: {e}")
+
+    # Fall back to kubeconfig context
     try:
-        # Try to get the current context from kubeconfig
         contexts, active_context = config.list_kube_config_contexts()
         if active_context and 'namespace' in active_context.get('context', {}):
             namespace = active_context['context']['namespace']
-            print(f"Using namespace from context: {namespace}", file=sys.stderr)
+            logger.info(f"Using namespace from kubeconfig context: {namespace}")
             return namespace
     except Exception as e:
-        # If we can't get the context (e.g., in-cluster config), fall back to default
-        print(f"Could not get namespace from context: {e}, using 'default'", file=sys.stderr)
+        logger.debug(f"Could not get namespace from kubeconfig context: {e}")
 
+    # Last resort: default namespace
+    logger.info("Using default namespace")
     return "default"
 
 
@@ -2066,48 +2129,135 @@ async def run_stdio_transport():
 
     FastMCP simplifies this - use run_stdio_async() for existing event loops!
     """
-    print("Starting CloudNativePG MCP server with stdio transport...", file=sys.stderr)
-    print(f"Python version: {sys.version}", file=sys.stderr)
-    print(f"FastMCP server initialized with name: cloudnative-pg", file=sys.stderr)
+    logger.info("Starting CloudNativePG MCP server with stdio transport...")
+    logger.info(f"Python version: {sys.version}")
+    logger.info("FastMCP server initialized with name: cloudnative-pg")
 
     # Use run_stdio_async() since we're already in an asyncio event loop
     await mcp.run_stdio_async()
 
 
-async def run_http_transport(host: str = "0.0.0.0", port: int = 3000):
+async def run_http_transport(host: str = "0.0.0.0", port: int = 4204):
     """
-    Run the MCP server using HTTP/SSE transport.
+    Run the MCP server using HTTP transport (Streamable HTTP) with OIDC authentication.
 
     This mode allows multiple clients to connect remotely and is suitable
-    for team environments and production deployments.
+    for team environments and production deployments. The MCP endpoint is
+    available at /mcp.
 
-    FastMCP makes HTTP/SSE transport simple with run_sse_async()!
+    OIDC authentication is enforced via environment variables:
+        OIDC_ISSUER: OIDC provider URL (required)
+        OIDC_AUDIENCE: Expected JWT audience (required)
+        OIDC_JWKS_URI: Optional JWKS URI override
+        DCR_PROXY_URL: Optional DCR proxy for client registration
+        OIDC_SCOPE: Required scope (default: openid)
     """
-    print(f"Starting CloudNativePG MCP server with HTTP/SSE transport on {host}:{port}...", file=sys.stderr)
-    print(f"FastMCP server initialized with name: cloudnative-pg", file=sys.stderr)
+    logger.info(f"Starting CloudNativePG MCP server with HTTP transport on {host}:{port}...")
+    logger.info("FastMCP server initialized with name: cloudnative-pg")
+    logger.info(f"MCP endpoint available at: http://{host}:{port}/mcp")
 
-    # FastMCP handles HTTP/SSE transport automatically
-    # This will create a server that can handle multiple concurrent clients
-    await mcp.run_sse_async(host=host, port=port)
+    # Initialize OIDC authentication if configured
+    auth_provider = None
+    middleware = []
 
-    # FastMCP automatically provides:
-    # - GET /sse - Server-Sent Events endpoint for bidirectional communication
-    # - POST /message - Endpoint for client messages
-    # - Built-in authentication support (via mcp.auth)
-    # - CORS handling
-    # - Error handling
-    #
-    # To add authentication:
-    # @mcp.auth
-    # async def authenticate(request):
-    #     # Verify API key, JWT, etc.
-    #     return True  # or raise an exception
-    #
-    # For production:
-    # - Run behind a reverse proxy (nginx, traefik) for TLS
-    # - Set FASTMCP_AUTH_SECRET environment variable
-    # - Consider rate limiting
-    # - Enable audit logging
+    # Check if OIDC should be enabled (config file or env var)
+    import os
+    from pathlib import Path
+    oidc_config_exists = Path("/etc/mcp/oidc.yaml").exists() or os.getenv("OIDC_ISSUER")
+
+    if oidc_config_exists:
+        try:
+            from auth_oidc import OIDCAuthProvider, OIDCAuthMiddleware
+            from starlette.middleware import Middleware
+
+            logger.info("Initializing OIDC authentication...")
+            # OIDCAuthProvider will check config file first, then env vars
+            auth_provider = OIDCAuthProvider()
+
+            # Create middleware using Starlette's Middleware wrapper
+            # This is the format Starlette expects when building middleware stack
+            middleware.append(
+                Middleware(
+                    OIDCAuthMiddleware,
+                    auth_provider=auth_provider,
+                    exclude_paths=["/healthz", "/readyz", "/.well-known/"]
+                )
+            )
+
+            logger.info("✓ OIDC authentication enabled")
+            logger.info(f"  Issuer: {auth_provider.issuer}")
+            logger.info(f"  Audience: {auth_provider.audience}")
+
+        except Exception as e:
+            logger.error(f"Failed to initialize OIDC authentication: {e}")
+            logger.error("Server will NOT start without valid OIDC configuration.")
+            raise
+    else:
+        logger.warning("OIDC authentication NOT configured!")
+        logger.warning("Provide OIDC config via:")
+        logger.warning("  1. Config file at /etc/mcp/oidc.yaml (recommended for Kubernetes)")
+        logger.warning("  2. Environment variables: OIDC_ISSUER and OIDC_AUDIENCE")
+        logger.warning("Running in INSECURE mode (development only).")
+
+    # Get Starlette app without middleware
+    # Use "http" transport (Streamable HTTP) with /mcp endpoint
+    # This is the recommended transport for production deployments
+    app = mcp.http_app(
+        transport="http",
+        path="/mcp"
+    )
+
+    # Add health check endpoints (unauthenticated) - must be added before wrapping with auth
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    async def liveness_check(request):
+        """Liveness probe - checks if server is running."""
+        return JSONResponse({"status": "alive", "service": "cnpg-mcp-server"})
+
+    async def readiness_check(request):
+        """Readiness probe - checks if server is ready to accept requests."""
+        # TODO: Add checks for Kubernetes API connectivity if needed
+        return JSONResponse({"status": "ready", "service": "cnpg-mcp-server"})
+
+    app.routes.insert(0, Route("/healthz", liveness_check, methods=["GET"]))
+    app.routes.insert(0, Route("/readyz", readiness_check, methods=["GET"]))
+
+    # Add OAuth metadata routes if auth provider is configured
+    if auth_provider:
+        metadata_routes = auth_provider.get_metadata_routes()
+        for route in metadata_routes:
+            app.routes.append(route)
+
+    # Wrap the app with OIDC middleware if configured
+    # This must be done AFTER adding all routes
+    if middleware:
+        from starlette.middleware import Middleware
+        from starlette.applications import Starlette
+
+        # Extract the OIDC middleware config
+        oidc_middleware_config = middleware[0]
+
+        # Apply middleware by wrapping the app
+        app.add_middleware(
+            oidc_middleware_config.cls,
+            **oidc_middleware_config.kwargs
+        )
+
+    # Run with uvicorn
+    import uvicorn
+
+    config = uvicorn.Config(
+        app,
+        host=host,
+        port=port,
+        log_level="info",
+        access_log=True,
+        server_header=False,
+    )
+
+    server = uvicorn.Server(config)
+    await server.serve()
 
 
 # ============================================================================
@@ -2122,10 +2272,10 @@ def parse_args():
         epilog="""
 Examples:
   # Run with stdio transport (default, for Claude Desktop)
-  python cnpg_mcp_server.py
+  python src/cnpg_mcp_server.py
   
   # Run with HTTP transport (future)
-  python cnpg_mcp_server.py --transport http --port 3000
+  python src/cnpg_mcp_server.py --transport http --port 3000
   
 Environment Variables:
   KUBECONFIG        Path to kubernetes config file
@@ -2150,8 +2300,8 @@ For more information, see README.md
     parser.add_argument(
         "--port",
         type=int,
-        default=3000,
-        help="Port to listen on (HTTP transport only, default: 3000)"
+        default=4204,
+        help="Port to listen on (HTTP transport only, default: 4204)"
     )
     
     return parser.parse_args()
@@ -2167,13 +2317,13 @@ async def main():
         elif args.transport == "http":
             await run_http_transport(host=args.host, port=args.port)
         else:
-            print(f"Unknown transport mode: {args.transport}", file=sys.stderr)
+            logger.error(f"Unknown transport mode: {args.transport}")
             sys.exit(1)
-            
+
     except KeyboardInterrupt:
-        print("\nShutting down gracefully...", file=sys.stderr)
+        logger.info("\nShutting down gracefully...")
     except Exception as e:
-        print(f"Fatal error: {e}", file=sys.stderr)
+        logger.error(f"Fatal error: {e}")
         import traceback
         traceback.print_exc(file=sys.stderr)
         sys.exit(1)

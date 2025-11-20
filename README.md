@@ -75,7 +75,7 @@ This automatically:
      "mcpServers": {
        "cnpg": {
          "command": "python",
-         "args": ["/absolute/path/to/cnpg_mcp_server.py"],
+         "args": ["/absolute/path/to/src/cnpg_mcp_server.py"],
          "env": {
            "KUBECONFIG": "/path/to/.kube/config"
          }
@@ -134,10 +134,10 @@ Communication over stdin/stdout. Best for local development and Claude Desktop i
 
 ```bash
 # Run with default stdio transport
-python cnpg_mcp_server.py
+python src/cnpg_mcp_server.py
 
 # Or explicitly specify stdio
-python cnpg_mcp_server.py --transport stdio
+python src/cnpg_mcp_server.py --transport stdio
 ```
 
 **Characteristics:**
@@ -155,7 +155,7 @@ HTTP server with Server-Sent Events for remote access. Best for team environment
 
 ```bash
 # Will be available in future version
-python cnpg_mcp_server.py --transport http --host 0.0.0.0 --port 3000
+python src/cnpg_mcp_server.py --transport http --host 0.0.0.0 --port 3000
 ```
 
 **When implemented, will provide:**
@@ -193,22 +193,22 @@ export KUBECONFIG=/path/to/your/kubeconfig
 
 ```bash
 # View all available options
-python cnpg_mcp_server.py --help
+python src/cnpg_mcp_server.py --help
 
 # Run with stdio transport (default)
-python cnpg_mcp_server.py
+python src/cnpg_mcp_server.py
 
 # Explicitly specify transport mode
-python cnpg_mcp_server.py --transport stdio
+python src/cnpg_mcp_server.py --transport stdio
 
 # Run with HTTP transport (when implemented)
-python cnpg_mcp_server.py --transport http --host 0.0.0.0 --port 3000
+python src/cnpg_mcp_server.py --transport http --host 0.0.0.0 --port 3000
 ```
 
 ### Standalone Mode (for testing)
 
 ```bash
-python cnpg_mcp_server.py
+python src/cnpg_mcp_server.py
 ```
 
 **Note**: The server runs as a long-running process waiting for MCP requests. In stdio mode, it won't exit until interrupted. This is expected behavior.
@@ -243,9 +243,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY cnpg_mcp_server.py .
+COPY src/cnpg_mcp_server.py .
 
-CMD ["python", "cnpg_mcp_server.py"]
+CMD ["python", "src/cnpg_mcp_server.py"]
 ```
 
 Deploy as a Kubernetes service that can be accessed by your LLM application.
@@ -585,13 +585,13 @@ async def my_tool(param1: str) -> str:
 
 Run syntax check:
 ```bash
-python -m py_compile cnpg_mcp_server.py
+python -m py_compile src/cnpg_mcp_server.py
 ```
 
 Test with a real Kubernetes cluster:
 ```bash
 # In one terminal (use tmux to keep it running)
-python cnpg_mcp_server.py
+python src/cnpg_mcp_server.py
 
 # In another terminal, test with MCP client or Claude Desktop
 ```
