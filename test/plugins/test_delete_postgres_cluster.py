@@ -1,22 +1,25 @@
-"""Cleanup test that deletes the shared test cluster."""
+"""Test plugin for delete_postgres_cluster tool (cleanup of shared test cluster)."""
 
 import time
 from . import TestPlugin, TestResult, check_for_operational_error, shared_test_state
 
 
-class CleanupTestClusterTest(TestPlugin):
-    """Cleanup test that deletes the shared test cluster created by CreatePostgresClusterTest."""
+class DeletePostgresClusterTest(TestPlugin):
+    """Test the delete_postgres_cluster tool by cleaning up the shared test cluster."""
 
     tool_name = "delete_postgres_cluster"
-    description = "Cleanup: Delete the shared test cluster"
+    description = "Test deleting the shared test cluster"
     depends_on = ["CreatePostgresClusterTest"]  # Hard dependency - skip if cluster wasn't created
     run_after = [  # Soft dependencies - run after all tests that use the cluster
         "ScalePostgresClusterTest",
         "GetClusterStatusTest",
         "ListRolesTest",
         "CreatePostgresRoleTest",
+        "UpdatePostgresRoleTest",
+        "DeletePostgresRoleTest",
         "ListDatabasesTest",
-        "CreatePostgresDatabaseTest"
+        "CreatePostgresDatabaseTest",
+        "DeletePostgresDatabaseTest"
     ]
 
     async def test(self, session) -> TestResult:
@@ -90,7 +93,7 @@ class CleanupTestClusterTest(TestPlugin):
                 plugin_name=self.get_name(),
                 tool_name=self.tool_name,
                 passed=False,
-                message="Cleanup failed with exception",
+                message="Cluster deletion test failed with exception",
                 error=str(e),
                 duration_ms=(time.time() - start_time) * 1000
             )
