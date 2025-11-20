@@ -11,14 +11,17 @@ class DeletePostgresClusterTest(TestPlugin):
     description = "Test deleting the shared test cluster"
     depends_on = ["CreatePostgresClusterTest"]  # Hard dependency - skip if cluster wasn't created
     run_after = [  # Soft dependencies - run after all tests that use the cluster
+        "VerifyClusterCreatedTest",
         "ScalePostgresClusterTest",
         "GetClusterStatusTest",
         "ListRolesTest",
         "CreatePostgresRoleTest",
+        "VerifyRoleCreatedTest",
         "UpdatePostgresRoleTest",
         "DeletePostgresRoleTest",
         "ListDatabasesTest",
         "CreatePostgresDatabaseTest",
+        "VerifyDatabaseCreatedTest",
         "DeletePostgresDatabaseTest"
     ]
 
