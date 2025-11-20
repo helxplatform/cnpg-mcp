@@ -1,26 +1,19 @@
-"""Cleanup test that deletes the shared test cluster."""
+"""Test plugin to verify created cluster appears in list."""
 
 import time
 from . import TestPlugin, TestResult, check_for_operational_error, shared_test_state
 
 
-class CleanupTestClusterTest(TestPlugin):
-    """Cleanup test that deletes the shared test cluster created by CreatePostgresClusterTest."""
+class VerifyClusterCreatedTest(TestPlugin):
+    """Verify that the created cluster appears in the clusters list."""
 
-    tool_name = "delete_postgres_cluster"
-    description = "Cleanup: Delete the shared test cluster"
-    depends_on = ["CreatePostgresClusterTest"]  # Hard dependency - skip if cluster wasn't created
-    run_after = [  # Soft dependencies - run after all tests that use the cluster
-        "ScalePostgresClusterTest",
-        "GetClusterStatusTest",
-        "ListRolesTest",
-        "CreatePostgresRoleTest",
-        "ListDatabasesTest",
-        "CreatePostgresDatabaseTest"
-    ]
+    tool_name = "list_postgres_clusters"
+    description = "Verify created cluster appears in clusters list"
+    depends_on = ["CreatePostgresClusterTest"]  # Must run after cluster is created
+    run_after = ["CreatePostgresClusterTest"]
 
     async def test(self, session) -> TestResult:
-        """Delete the shared test cluster."""
+        """Verify the created cluster appears in list_postgres_clusters output."""
         start_time = time.time()
 
         try:
@@ -28,37 +21,34 @@ class CleanupTestClusterTest(TestPlugin):
             cluster_name = shared_test_state.get("test_cluster_name")
 
             if not cluster_name:
-                # No cluster to clean up - this is okay
-                return TestResult(
-                    plugin_name=self.get_name(),
-                    tool_name=self.tool_name,
-                    passed=True,
-                    message="No shared test cluster to clean up",
-                    duration_ms=(time.time() - start_time) * 1000
-                )
-
-            # Delete the cluster
-            delete_result = await session.call_tool(
-                self.tool_name,
-                arguments={
-                    "name": cluster_name,
-                    "confirm_deletion": True
-                }
-            )
-
-            # Check if we got a response
-            if not delete_result.content:
                 return TestResult(
                     plugin_name=self.get_name(),
                     tool_name=self.tool_name,
                     passed=False,
-                    message=f"No content in delete response for cluster '{cluster_name}'",
+                    message="No shared test cluster available",
+                    error="CreatePostgresClusterTest must run first and succeed",
+                    duration_ms=(time.time() - start_time) * 1000
+                )
+
+            # List clusters
+            result = await session.call_tool(
+                self.tool_name,
+                arguments={}
+            )
+
+            # Check if we got a response
+            if not result.content:
+                return TestResult(
+                    plugin_name=self.get_name(),
+                    tool_name=self.tool_name,
+                    passed=False,
+                    message="No content in response",
                     duration_ms=(time.time() - start_time) * 1000
                 )
 
             # Extract text from response
             response_text = ""
-            for content in delete_result.content:
+            for content in result.content:
                 if hasattr(content, 'text'):
                     response_text += content.text
 
@@ -69,19 +59,28 @@ class CleanupTestClusterTest(TestPlugin):
                     plugin_name=self.get_name(),
                     tool_name=self.tool_name,
                     passed=False,
-                    message=f"Failed to delete cluster '{cluster_name}'",
+                    message="Tool executed but operation failed",
                     error=error_msg,
                     duration_ms=(time.time() - start_time) * 1000
                 )
 
-            # Success - clear the shared state
-            shared_test_state["test_cluster_name"] = None
+            # Verify the created cluster appears in the list
+            if cluster_name not in response_text:
+                return TestResult(
+                    plugin_name=self.get_name(),
+                    tool_name=self.tool_name,
+                    passed=False,
+                    message=f"Created cluster '{cluster_name}' not found in clusters list",
+                    error=f"List output (first 500 chars): {response_text[:500]}",
+                    duration_ms=(time.time() - start_time) * 1000
+                )
 
+            # Success!
             return TestResult(
                 plugin_name=self.get_name(),
                 tool_name=self.tool_name,
                 passed=True,
-                message=f"Successfully deleted shared test cluster '{cluster_name}'",
+                message=f"Verified cluster '{cluster_name}' appears in clusters list",
                 duration_ms=(time.time() - start_time) * 1000
             )
 
@@ -90,7 +89,7 @@ class CleanupTestClusterTest(TestPlugin):
                 plugin_name=self.get_name(),
                 tool_name=self.tool_name,
                 passed=False,
-                message="Cleanup failed with exception",
+                message="Test failed with exception",
                 error=str(e),
                 duration_ms=(time.time() - start_time) * 1000
             )

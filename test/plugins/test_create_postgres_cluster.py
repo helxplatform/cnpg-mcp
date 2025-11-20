@@ -11,6 +11,7 @@ class CreatePostgresClusterTest(TestPlugin):
     tool_name = "create_postgres_cluster"
     description = "Test creating a PostgreSQL cluster (shared by other tests)"
     depends_on = ["ServerInfoTest"]  # Verify server responds before trying to create clusters
+    run_after = ["ListClustersTest"]  # Run after baseline list
 
     async def test(self, session) -> TestResult:
         """Test create_postgres_cluster tool with cleanup."""

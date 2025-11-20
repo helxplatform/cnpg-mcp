@@ -1,24 +1,26 @@
-"""Test plugin for get_cluster_status tool."""
+"""Test plugin for update_postgres_role tool."""
 
 import time
+import asyncio
 from . import TestPlugin, TestResult, check_for_operational_error, shared_test_state
 
 
-class GetClusterStatusTest(TestPlugin):
-    """Test the get_cluster_status tool."""
+class UpdatePostgresRoleTest(TestPlugin):
+    """Test the update_postgres_role tool."""
 
-    tool_name = "get_cluster_status"
-    description = "Test getting cluster status details"
-    depends_on = ["CreatePostgresClusterTest"]  # Use shared test cluster
-    run_after = ["VerifyClusterCreatedTest"]  # Run after cluster creation is verified
+    tool_name = "update_postgres_role"
+    description = "Test updating a PostgreSQL role"
+    depends_on = ["CreatePostgresRoleTest"]  # Use shared test role
+    run_after = ["VerifyRoleCreatedTest"]  # Run after role creation is verified
 
     async def test(self, session) -> TestResult:
-        """Test get_cluster_status tool."""
+        """Test update_postgres_role tool using the shared role."""
         start_time = time.time()
 
         try:
-            # Use the shared test cluster
+            # Use the shared test cluster and role
             cluster_name = shared_test_state.get("test_cluster_name")
+            role_name = shared_test_state.get("test_role_name")
 
             if not cluster_name:
                 return TestResult(
@@ -30,37 +32,41 @@ class GetClusterStatusTest(TestPlugin):
                     duration_ms=(time.time() - start_time) * 1000
                 )
 
-            # Call get_cluster_status
-            result = await session.call_tool(
-                self.tool_name,
-                arguments={"name": cluster_name}
-            )
-
-            # Check if we got a response
-            if not result.content:
+            if not role_name:
                 return TestResult(
                     plugin_name=self.get_name(),
                     tool_name=self.tool_name,
                     passed=False,
-                    message="No content in response",
+                    message="No shared test role available",
+                    error="CreatePostgresRoleTest must run first and succeed",
+                    duration_ms=(time.time() - start_time) * 1000
+                )
+
+            # Update the role (enable createdb)
+            update_result = await session.call_tool(
+                self.tool_name,
+                arguments={
+                    "cluster_name": cluster_name,
+                    "role_name": role_name,
+                    "createdb": True
+                }
+            )
+
+            # Check if we got a response
+            if not update_result.content:
+                return TestResult(
+                    plugin_name=self.get_name(),
+                    tool_name=self.tool_name,
+                    passed=False,
+                    message="No content in update response",
                     duration_ms=(time.time() - start_time) * 1000
                 )
 
             # Extract text from response
             response_text = ""
-            for content in result.content:
+            for content in update_result.content:
                 if hasattr(content, 'text'):
                     response_text += content.text
-
-            # Basic validation
-            if len(response_text) < 10:
-                return TestResult(
-                    plugin_name=self.get_name(),
-                    tool_name=self.tool_name,
-                    passed=False,
-                    message=f"Response too short ({len(response_text)} chars)",
-                    duration_ms=(time.time() - start_time) * 1000
-                )
 
             # Check for operational errors
             is_error, error_msg = check_for_operational_error(response_text)
@@ -69,27 +75,28 @@ class GetClusterStatusTest(TestPlugin):
                     plugin_name=self.get_name(),
                     tool_name=self.tool_name,
                     passed=False,
-                    message="Tool executed but operation failed",
+                    message="Role update failed",
                     error=error_msg,
                     duration_ms=(time.time() - start_time) * 1000
                 )
 
-            # Verify response contains expected status information
-            if not any(keyword in response_text.lower() for keyword in ["status", "instances", "ready"]):
+            # Verify update was acknowledged
+            if "updated successfully" not in response_text.lower() and "role" not in response_text.lower():
                 return TestResult(
                     plugin_name=self.get_name(),
                     tool_name=self.tool_name,
                     passed=False,
-                    message="Response missing expected status keywords",
+                    message="Response missing expected update confirmation",
+                    error=f"Update response: {response_text[:300]}",
                     duration_ms=(time.time() - start_time) * 1000
                 )
 
-            # Success!
+            # Success! (role will be deleted by DeletePostgresRoleTest)
             return TestResult(
                 plugin_name=self.get_name(),
                 tool_name=self.tool_name,
                 passed=True,
-                message=f"Successfully got status for cluster '{cluster_name}'",
+                message=f"Successfully updated role '{role_name}' in cluster '{cluster_name}'",
                 duration_ms=(time.time() - start_time) * 1000
             )
 

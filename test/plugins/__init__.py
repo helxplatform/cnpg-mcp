@@ -13,6 +13,8 @@ import re
 # Shared state for passing data between tests
 shared_test_state = {
     "test_cluster_name": None,  # Cluster created by CreatePostgresClusterTest
+    "test_role_name": None,  # Role created by CreatePostgresRoleTest
+    "test_database_name": None,  # Database created by CreatePostgresDatabaseTest
 }
 
 
