@@ -9,6 +9,7 @@ class ListClustersTest(TestPlugin):
 
     tool_name = "list_postgres_clusters"
     description = "Test listing PostgreSQL clusters"
+    depends_on = ["ServerInfoTest"]  # Verify server responds first
 
     async def test(self, session) -> TestResult:
         """Test list_postgres_clusters tool."""

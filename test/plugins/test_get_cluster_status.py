@@ -1,7 +1,7 @@
 """Test plugin for get_cluster_status tool."""
 
 import time
-from . import TestPlugin, TestResult, check_for_operational_error
+from . import TestPlugin, TestResult, check_for_operational_error, shared_test_state
 
 
 class GetClusterStatusTest(TestPlugin):
@@ -9,38 +9,23 @@ class GetClusterStatusTest(TestPlugin):
 
     tool_name = "get_cluster_status"
     description = "Test getting cluster status details"
+    depends_on = ["CreatePostgresClusterTest"]  # Use shared test cluster
 
     async def test(self, session) -> TestResult:
         """Test get_cluster_status tool."""
         start_time = time.time()
 
         try:
-            # First, get a cluster name from list_postgres_clusters
-            list_result = await session.call_tool(
-                "list_postgres_clusters",
-                arguments={}
-            )
-
-            # Extract cluster name from the response
-            cluster_name = None
-            if list_result.content:
-                response_text = ""
-                for content in list_result.content:
-                    if hasattr(content, 'text'):
-                        response_text += content.text
-
-                # Simple extraction - look for "test" cluster names
-                if "test4" in response_text:
-                    cluster_name = "test4"
-                elif "test5" in response_text:
-                    cluster_name = "test5"
+            # Use the shared test cluster
+            cluster_name = shared_test_state.get("test_cluster_name")
 
             if not cluster_name:
                 return TestResult(
                     plugin_name=self.get_name(),
                     tool_name=self.tool_name,
                     passed=False,
-                    message="No test cluster found to query status",
+                    message="No shared test cluster available",
+                    error="CreatePostgresClusterTest must run first and succeed",
                     duration_ms=(time.time() - start_time) * 1000
                 )
 

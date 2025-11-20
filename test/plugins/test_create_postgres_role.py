@@ -2,7 +2,7 @@
 
 import time
 import asyncio
-from . import TestPlugin, TestResult, check_for_operational_error
+from . import TestPlugin, TestResult, check_for_operational_error, shared_test_state
 
 
 class CreatePostgresRoleTest(TestPlugin):
@@ -10,6 +10,7 @@ class CreatePostgresRoleTest(TestPlugin):
 
     tool_name = "create_postgres_role"
     description = "Test creating and deleting a PostgreSQL role"
+    depends_on = ["CreatePostgresClusterTest"]  # Use shared test cluster
 
     async def test(self, session) -> TestResult:
         """Test create_postgres_role tool with cleanup."""
@@ -18,31 +19,16 @@ class CreatePostgresRoleTest(TestPlugin):
         role_name = f"test-role-{int(time.time())}"
 
         try:
-            # Step 1: Get an existing cluster to use
-            list_result = await session.call_tool(
-                "list_postgres_clusters",
-                arguments={}
-            )
-
-            cluster_name = None
-            if list_result.content:
-                response_text = ""
-                for content in list_result.content:
-                    if hasattr(content, 'text'):
-                        response_text += content.text
-
-                # Look for test clusters
-                if "test4" in response_text:
-                    cluster_name = "test4"
-                elif "test5" in response_text:
-                    cluster_name = "test5"
+            # Use the shared test cluster
+            cluster_name = shared_test_state.get("test_cluster_name")
 
             if not cluster_name:
                 return TestResult(
                     plugin_name=self.get_name(),
                     tool_name=self.tool_name,
                     passed=False,
-                    message="No test cluster found to create role in",
+                    message="No shared test cluster available",
+                    error="CreatePostgresClusterTest must run first and succeed",
                     duration_ms=(time.time() - start_time) * 1000
                 )
 

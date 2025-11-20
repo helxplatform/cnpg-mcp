@@ -10,7 +10,14 @@ class CleanupTestClusterTest(TestPlugin):
     tool_name = "delete_postgres_cluster"
     description = "Cleanup: Delete the shared test cluster"
     depends_on = ["CreatePostgresClusterTest"]  # Hard dependency - skip if cluster wasn't created
-    run_after = ["ScalePostgresClusterTest"]     # Soft dependency - run after these tests
+    run_after = [  # Soft dependencies - run after all tests that use the cluster
+        "ScalePostgresClusterTest",
+        "GetClusterStatusTest",
+        "ListRolesTest",
+        "CreatePostgresRoleTest",
+        "ListDatabasesTest",
+        "CreatePostgresDatabaseTest"
+    ]
 
     async def test(self, session) -> TestResult:
         """Delete the shared test cluster."""
@@ -35,7 +42,7 @@ class CleanupTestClusterTest(TestPlugin):
                 self.tool_name,
                 arguments={
                     "name": cluster_name,
-                    "confirm": True
+                    "confirm_deletion": True
                 }
             )
 

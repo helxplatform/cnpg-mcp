@@ -2,7 +2,7 @@
 
 import time
 import asyncio
-from . import TestPlugin, TestResult, check_for_operational_error
+from . import TestPlugin, TestResult, check_for_operational_error, shared_test_state
 
 
 class CreatePostgresDatabaseTest(TestPlugin):
@@ -10,6 +10,7 @@ class CreatePostgresDatabaseTest(TestPlugin):
 
     tool_name = "create_postgres_database"
     description = "Test creating and deleting a PostgreSQL database"
+    depends_on = ["CreatePostgresClusterTest"]  # Use shared test cluster
 
     async def test(self, session) -> TestResult:
         """Test create_postgres_database tool with cleanup."""
@@ -17,31 +18,16 @@ class CreatePostgresDatabaseTest(TestPlugin):
         db_name = f"testdb{int(time.time())}"
 
         try:
-            # Step 1: Get an existing cluster to use
-            list_result = await session.call_tool(
-                "list_postgres_clusters",
-                arguments={}
-            )
-
-            cluster_name = None
-            if list_result.content:
-                response_text = ""
-                for content in list_result.content:
-                    if hasattr(content, 'text'):
-                        response_text += content.text
-
-                # Look for test clusters
-                if "test4" in response_text:
-                    cluster_name = "test4"
-                elif "test5" in response_text:
-                    cluster_name = "test5"
+            # Use the shared test cluster
+            cluster_name = shared_test_state.get("test_cluster_name")
 
             if not cluster_name:
                 return TestResult(
                     plugin_name=self.get_name(),
                     tool_name=self.tool_name,
                     passed=False,
-                    message="No test cluster found to create database in",
+                    message="No shared test cluster available",
+                    error="CreatePostgresClusterTest must run first and succeed",
                     duration_ms=(time.time() - start_time) * 1000
                 )
 
@@ -86,7 +72,7 @@ class CreatePostgresDatabaseTest(TestPlugin):
 
             # Verify database was created
             if "created successfully" not in response_text.lower() and "database" not in response_text.lower():
-                await self._cleanup_database(session, db_name)
+                await self._cleanup_database(session, cluster_name, db_name)
                 return TestResult(
                     plugin_name=self.get_name(),
                     tool_name=self.tool_name,
@@ -129,7 +115,7 @@ class CreatePostgresDatabaseTest(TestPlugin):
 
             if not database_found:
                 # Try to cleanup anyway
-                await self._cleanup_database(session, db_name)
+                await self._cleanup_database(session, cluster_name, db_name)
                 return TestResult(
                     plugin_name=self.get_name(),
                     tool_name=self.tool_name,
@@ -140,7 +126,7 @@ class CreatePostgresDatabaseTest(TestPlugin):
                 )
 
             # Step 4: Cleanup - Delete the test database
-            cleanup_success = await self._cleanup_database(session, db_name)
+            cleanup_success = await self._cleanup_database(session, cluster_name, db_name)
 
             if not cleanup_success:
                 return TestResult(
@@ -163,7 +149,8 @@ class CreatePostgresDatabaseTest(TestPlugin):
         except Exception as e:
             # Attempt cleanup even on exception
             try:
-                await self._cleanup_database(session, db_name)
+                if cluster_name:
+                    await self._cleanup_database(session, cluster_name, db_name)
             except:
                 pass
 
@@ -176,14 +163,14 @@ class CreatePostgresDatabaseTest(TestPlugin):
                 duration_ms=(time.time() - start_time) * 1000
             )
 
-    async def _cleanup_database(self, session, database_name: str) -> bool:
+    async def _cleanup_database(self, session, cluster_name: str, database_name: str) -> bool:
         """Helper to delete test database."""
         try:
             delete_result = await session.call_tool(
                 "delete_postgres_database",
                 arguments={
-                    "database_name": database_name,
-                    "confirm": True
+                    "cluster_name": cluster_name,
+                    "database_name": database_name
                 }
             )
 

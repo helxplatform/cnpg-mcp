@@ -10,7 +10,7 @@ class CreatePostgresClusterTest(TestPlugin):
 
     tool_name = "create_postgres_cluster"
     description = "Test creating a PostgreSQL cluster (shared by other tests)"
-    depends_on = []  # No dependencies - this is a foundational test
+    depends_on = ["ServerInfoTest"]  # Verify server responds before trying to create clusters
 
     async def test(self, session) -> TestResult:
         """Test create_postgres_cluster tool with cleanup."""
@@ -180,7 +180,7 @@ class CreatePostgresClusterTest(TestPlugin):
                 "delete_postgres_cluster",
                 arguments={
                     "name": cluster_name,
-                    "confirm": True
+                    "confirm_deletion": True
                 }
             )
 
