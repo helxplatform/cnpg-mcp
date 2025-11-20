@@ -11,6 +11,7 @@ class ScalePostgresClusterTest(TestPlugin):
     tool_name = "scale_postgres_cluster"
     description = "Test scaling a PostgreSQL cluster"
     depends_on = ["CreatePostgresClusterTest"]  # Depends on cluster creation
+    run_after = ["VerifyClusterCreatedTest"]  # Run after cluster creation is verified
 
     async def test(self, session) -> TestResult:
         """Test scale_postgres_cluster tool using shared cluster."""
