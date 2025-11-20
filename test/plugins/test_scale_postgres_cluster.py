@@ -2,62 +2,41 @@
 
 import time
 import asyncio
-from . import TestPlugin, TestResult, check_for_operational_error
+from . import TestPlugin, TestResult, check_for_operational_error, shared_test_state
 
 
 class ScalePostgresClusterTest(TestPlugin):
-    """Test the scale_postgres_cluster tool with create and cleanup."""
+    """Test the scale_postgres_cluster tool using the shared test cluster."""
 
     tool_name = "scale_postgres_cluster"
     description = "Test scaling a PostgreSQL cluster"
+    depends_on = ["CreatePostgresClusterTest"]  # Depends on cluster creation
 
     async def test(self, session) -> TestResult:
-        """Test scale_postgres_cluster tool."""
+        """Test scale_postgres_cluster tool using shared cluster."""
         start_time = time.time()
-        cluster_name = f"test-scale-{int(time.time())}"
 
         try:
-            # Step 1: Create a test cluster with 1 instance
-            create_result = await session.call_tool(
-                "create_postgres_cluster",
-                arguments={
-                    "name": cluster_name,
-                    "instances": 1,
-                    "storage_size": "1Gi",
-                    "postgresql_version": "16"
-                }
+            # Use the cluster created by CreatePostgresClusterTest
+            cluster_name = shared_test_state.get("test_cluster_name")
+
+            if not cluster_name:
+                return TestResult(
+                    plugin_name=self.get_name(),
+                    tool_name=self.tool_name,
+                    passed=False,
+                    message="No shared test cluster available",
+                    error="CreatePostgresClusterTest must run first and succeed",
+                    duration_ms=(time.time() - start_time) * 1000
+                )
+
+            # Get initial instance count
+            initial_status = await session.call_tool(
+                "get_cluster_status",
+                arguments={"name": cluster_name}
             )
 
-            # Check creation success
-            if not create_result.content:
-                return TestResult(
-                    plugin_name=self.get_name(),
-                    tool_name=self.tool_name,
-                    passed=False,
-                    message="Failed to create test cluster",
-                    duration_ms=(time.time() - start_time) * 1000
-                )
-
-            create_text = ""
-            for content in create_result.content:
-                if hasattr(content, 'text'):
-                    create_text += content.text
-
-            is_error, error_msg = check_for_operational_error(create_text)
-            if is_error:
-                return TestResult(
-                    plugin_name=self.get_name(),
-                    tool_name=self.tool_name,
-                    passed=False,
-                    message="Failed to create test cluster for scaling",
-                    error=error_msg,
-                    duration_ms=(time.time() - start_time) * 1000
-                )
-
-            # Wait for cluster to be fully created and ready
-            await asyncio.sleep(5)
-
-            # Step 2: Scale cluster to 2 instances
+            # Scale cluster from 1 to 2 instances
             scale_result = await session.call_tool(
                 self.tool_name,
                 arguments={
@@ -68,7 +47,6 @@ class ScalePostgresClusterTest(TestPlugin):
 
             # Check if we got a response
             if not scale_result.content:
-                await self._cleanup_cluster(session, cluster_name)
                 return TestResult(
                     plugin_name=self.get_name(),
                     tool_name=self.tool_name,
@@ -86,7 +64,6 @@ class ScalePostgresClusterTest(TestPlugin):
             # Check for operational errors
             is_error, error_msg = check_for_operational_error(response_text)
             if is_error:
-                await self._cleanup_cluster(session, cluster_name)
                 return TestResult(
                     plugin_name=self.get_name(),
                     tool_name=self.tool_name,
@@ -96,39 +73,62 @@ class ScalePostgresClusterTest(TestPlugin):
                     duration_ms=(time.time() - start_time) * 1000
                 )
 
-            # Verify scaling was acknowledged
-            if "scaled" not in response_text.lower() and "instances" not in response_text.lower():
-                await self._cleanup_cluster(session, cluster_name)
+            # Verify scaling was initiated
+            response_lower = response_text.lower()
+            if "scaling" not in response_lower and "scale" not in response_lower:
                 return TestResult(
                     plugin_name=self.get_name(),
                     tool_name=self.tool_name,
                     passed=False,
                     message="Response missing expected scaling confirmation",
+                    error=f"Scale response: {response_text[:300]}",
                     duration_ms=(time.time() - start_time) * 1000
                 )
 
-            # Step 3: Verify cluster status shows updated instance count
-            await asyncio.sleep(3)
-            status_result = await session.call_tool(
-                "get_cluster_status",
-                arguments={"name": cluster_name}
-            )
+            # Poll for scaling to complete (wait up to 60 seconds)
+            scaling_complete = False
+            last_status_text = ""
+            max_wait_time = 60  # seconds
+            poll_interval = 3  # seconds
+            attempts = max_wait_time // poll_interval
 
-            status_text = ""
-            if status_result.content:
-                for content in status_result.content:
-                    if hasattr(content, 'text'):
-                        status_text += content.text
+            for attempt in range(attempts):
+                await asyncio.sleep(poll_interval)
 
-            # Cleanup: Delete the test cluster
-            cleanup_success = await self._cleanup_cluster(session, cluster_name)
+                try:
+                    # Get cluster status
+                    status_result = await session.call_tool(
+                        "get_cluster_status",
+                        arguments={"name": cluster_name}
+                    )
 
-            if not cleanup_success:
+                    status_text = ""
+                    if status_result.content:
+                        for content in status_result.content:
+                            if hasattr(content, 'text'):
+                                status_text += content.text
+
+                    last_status_text = status_text
+
+                    # Check if scaling is complete by looking for instance count
+                    # The status should show 2 instances (or 2/2 ready)
+                    status_lower = status_text.lower()
+                    if ("2 instances" in status_lower or
+                        "instances: 2" in status_lower or
+                        "2/2" in status_text or
+                        ("ready instances: 2" in status_lower)):
+                        scaling_complete = True
+                        break
+                except Exception as e:
+                    last_status_text = f"Exception on attempt {attempt + 1}: {str(e)}"
+
+            if not scaling_complete:
                 return TestResult(
                     plugin_name=self.get_name(),
                     tool_name=self.tool_name,
                     passed=False,
-                    message=f"Cluster scaled successfully but cleanup failed for '{cluster_name}'",
+                    message=f"Scaling initiated but not complete after {max_wait_time} seconds",
+                    error=f"Last status: {last_status_text[:500]}",
                     duration_ms=(time.time() - start_time) * 1000
                 )
 
@@ -137,17 +137,11 @@ class ScalePostgresClusterTest(TestPlugin):
                 plugin_name=self.get_name(),
                 tool_name=self.tool_name,
                 passed=True,
-                message=f"Successfully scaled cluster '{cluster_name}' from 1 to 2 instances and cleaned up",
+                message=f"Successfully scaled cluster '{cluster_name}' from 1 to 2 instances",
                 duration_ms=(time.time() - start_time) * 1000
             )
 
         except Exception as e:
-            # Attempt cleanup even on exception
-            try:
-                await self._cleanup_cluster(session, cluster_name)
-            except:
-                pass
-
             return TestResult(
                 plugin_name=self.get_name(),
                 tool_name=self.tool_name,
@@ -156,28 +150,3 @@ class ScalePostgresClusterTest(TestPlugin):
                 error=str(e),
                 duration_ms=(time.time() - start_time) * 1000
             )
-
-    async def _cleanup_cluster(self, session, cluster_name: str) -> bool:
-        """Helper to delete test cluster."""
-        try:
-            delete_result = await session.call_tool(
-                "delete_postgres_cluster",
-                arguments={
-                    "name": cluster_name,
-                    "confirm": True
-                }
-            )
-
-            if delete_result.content:
-                response_text = ""
-                for content in delete_result.content:
-                    if hasattr(content, 'text'):
-                        response_text += content.text
-
-                # Check if deletion succeeded
-                is_error, _ = check_for_operational_error(response_text)
-                return not is_error
-
-            return False
-        except Exception:
-            return False

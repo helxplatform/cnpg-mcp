@@ -95,29 +95,47 @@ class CreatePostgresDatabaseTest(TestPlugin):
                     duration_ms=(time.time() - start_time) * 1000
                 )
 
-            # Wait for database to be registered in Kubernetes
-            await asyncio.sleep(5)
+            # Poll for database to be registered in Kubernetes (retry up to 30 seconds)
+            database_found = False
+            last_list_text = ""
+            max_wait_time = 30  # seconds
+            poll_interval = 3  # seconds
+            attempts = max_wait_time // poll_interval
 
-            # Step 3: Verify database exists by listing
-            list_db_result = await session.call_tool(
-                "list_postgres_databases",
-                arguments={}
-            )
+            for attempt in range(attempts):
+                await asyncio.sleep(poll_interval)
 
-            list_text = ""
-            if list_db_result.content:
-                for content in list_db_result.content:
-                    if hasattr(content, 'text'):
-                        list_text += content.text
+                try:
+                    # List databases for the cluster
+                    list_db_result = await session.call_tool(
+                        "list_postgres_databases",
+                        arguments={"cluster_name": cluster_name}
+                    )
 
-            if db_name not in list_text:
+                    list_text = ""
+                    if list_db_result.content:
+                        for content in list_db_result.content:
+                            if hasattr(content, 'text'):
+                                list_text += content.text
+
+                    last_list_text = list_text
+
+                    # Check if database appears in list
+                    if db_name in list_text:
+                        database_found = True
+                        break
+                except Exception as e:
+                    last_list_text = f"Exception on attempt {attempt + 1}: {str(e)}"
+
+            if not database_found:
                 # Try to cleanup anyway
                 await self._cleanup_database(session, db_name)
                 return TestResult(
                     plugin_name=self.get_name(),
                     tool_name=self.tool_name,
                     passed=False,
-                    message=f"Created database '{db_name}' not found in database list",
+                    message=f"Created database '{db_name}' not found in database list after {max_wait_time} seconds",
+                    error=f"Last list result length: {len(last_list_text)} chars",
                     duration_ms=(time.time() - start_time) * 1000
                 )
 

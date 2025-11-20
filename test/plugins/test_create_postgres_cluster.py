@@ -1,14 +1,16 @@
 """Test plugin for create_postgres_cluster tool."""
 
 import time
-from . import TestPlugin, TestResult, check_for_operational_error
+import asyncio
+from . import TestPlugin, TestResult, check_for_operational_error, shared_test_state
 
 
 class CreatePostgresClusterTest(TestPlugin):
-    """Test the create_postgres_cluster tool with cleanup."""
+    """Test the create_postgres_cluster tool. Creates a cluster for other tests to use."""
 
     tool_name = "create_postgres_cluster"
-    description = "Test creating and deleting a PostgreSQL cluster"
+    description = "Test creating a PostgreSQL cluster (shared by other tests)"
+    depends_on = []  # No dependencies - this is a foundational test
 
     async def test(self, session) -> TestResult:
         """Test create_postgres_cluster tool with cleanup."""
@@ -23,7 +25,7 @@ class CreatePostgresClusterTest(TestPlugin):
                     "name": cluster_name,
                     "instances": 1,
                     "storage_size": "1Gi",
-                    "postgresql_version": "16"
+                    "postgres_version": "16"
                 }
             )
 
@@ -51,64 +53,107 @@ class CreatePostgresClusterTest(TestPlugin):
                     tool_name=self.tool_name,
                     passed=False,
                     message="Cluster creation failed",
-                    error=error_msg,
+                    error=f"Create response: {response_text[:500]}",
                     duration_ms=(time.time() - start_time) * 1000
                 )
 
-            # Verify cluster was created
+            # Verify cluster creation was accepted
             if "created successfully" not in response_text.lower() and "cluster" not in response_text.lower():
                 return TestResult(
                     plugin_name=self.get_name(),
                     tool_name=self.tool_name,
                     passed=False,
                     message="Response missing expected creation confirmation",
+                    error=f"Create response: {response_text[:500]}",
                     duration_ms=(time.time() - start_time) * 1000
                 )
 
-            # Wait for cluster to be registered in Kubernetes
-            await asyncio.sleep(5)
+            # Immediately check if cluster was actually created (before polling)
+            try:
+                immediate_status = await session.call_tool(
+                    "get_cluster_status",
+                    arguments={"name": cluster_name}
+                )
 
-            # Verify cluster exists by listing
-            list_result = await session.call_tool(
-                "list_postgres_clusters",
-                arguments={}
-            )
+                immediate_text = ""
+                if immediate_status.content:
+                    for content in immediate_status.content:
+                        if hasattr(content, 'text'):
+                            immediate_text += content.text
 
-            list_text = ""
-            if list_result.content:
-                for content in list_result.content:
-                    if hasattr(content, 'text'):
-                        list_text += content.text
+                # If we get a 404 immediately, the create didn't work
+                is_error, error_detail = check_for_operational_error(immediate_text)
+                if is_error and "404" in immediate_text:
+                    return TestResult(
+                        plugin_name=self.get_name(),
+                        tool_name=self.tool_name,
+                        passed=False,
+                        message="Cluster creation reported success but cluster not found in Kubernetes",
+                        error=f"Create said: {response_text[:200]}\n\nImmediate status check: {immediate_text[:300]}",
+                        duration_ms=(time.time() - start_time) * 1000
+                    )
+            except Exception as e:
+                # Immediate check failed - this is expected, will retry with polling
+                pass
 
-            if cluster_name not in list_text:
-                # Try to cleanup anyway
+            # Poll for cluster to be READY (retry up to 60 seconds)
+            cluster_ready = False
+            last_status_text = ""
+            max_wait_time = 60  # seconds
+            poll_interval = 3  # seconds
+            attempts = max_wait_time // poll_interval
+
+            for attempt in range(attempts):
+                await asyncio.sleep(poll_interval)
+
+                try:
+                    # Get cluster status
+                    status_result = await session.call_tool(
+                        "get_cluster_status",
+                        arguments={"name": cluster_name}
+                    )
+
+                    status_text = ""
+                    if status_result.content:
+                        for content in status_result.content:
+                            if hasattr(content, 'text'):
+                                status_text += content.text
+
+                    last_status_text = status_text
+
+                    # Check if cluster is ready (look for "ready" or "healthy" keywords)
+                    is_error, error_detail = check_for_operational_error(status_text)
+                    if not is_error and len(status_text) > 10:
+                        # Check if cluster shows as ready
+                        status_lower = status_text.lower()
+                        if "ready" in status_lower or "healthy" in status_lower:
+                            cluster_ready = True
+                            break
+                        # Cluster exists but not ready yet - keep polling
+                except Exception as e:
+                    # Cluster not ready yet, continue polling
+                    last_status_text = f"Exception on attempt {attempt + 1}: {str(e)}"
+
+            if not cluster_ready:
+                # Cluster didn't become ready in time - cleanup
                 await self._cleanup_cluster(session, cluster_name)
                 return TestResult(
                     plugin_name=self.get_name(),
                     tool_name=self.tool_name,
                     passed=False,
-                    message=f"Created cluster '{cluster_name}' not found in list",
+                    message=f"Cluster '{cluster_name}' created but not ready after {max_wait_time} seconds",
+                    error=f"Last status: {last_status_text[:500]}",
                     duration_ms=(time.time() - start_time) * 1000
                 )
 
-            # Cleanup: Delete the test cluster
-            cleanup_success = await self._cleanup_cluster(session, cluster_name)
+            # Success! Store cluster name for other tests to use
+            shared_test_state["test_cluster_name"] = cluster_name
 
-            if not cleanup_success:
-                return TestResult(
-                    plugin_name=self.get_name(),
-                    tool_name=self.tool_name,
-                    passed=False,
-                    message=f"Cluster created successfully but cleanup failed for '{cluster_name}'",
-                    duration_ms=(time.time() - start_time) * 1000
-                )
-
-            # Success!
             return TestResult(
                 plugin_name=self.get_name(),
                 tool_name=self.tool_name,
                 passed=True,
-                message=f"Successfully created and cleaned up cluster '{cluster_name}'",
+                message=f"Successfully created cluster '{cluster_name}' and it is ready",
                 duration_ms=(time.time() - start_time) * 1000
             )
 

@@ -14,7 +14,8 @@ class CreatePostgresRoleTest(TestPlugin):
     async def test(self, session) -> TestResult:
         """Test create_postgres_role tool with cleanup."""
         start_time = time.time()
-        role_name = f"test_role_{int(time.time())}"
+        # Use hyphens instead of underscores for Kubernetes-compliant naming
+        role_name = f"test-role-{int(time.time())}"
 
         try:
             # Step 1: Get an existing cluster to use

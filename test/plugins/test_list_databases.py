@@ -15,10 +15,38 @@ class ListDatabasesTest(TestPlugin):
         start_time = time.time()
 
         try:
-            # Call list_postgres_databases (no cluster name needed - lists all Database CRDs)
+            # First, get a cluster name
+            list_result = await session.call_tool(
+                "list_postgres_clusters",
+                arguments={}
+            )
+
+            cluster_name = None
+            if list_result.content:
+                response_text = ""
+                for content in list_result.content:
+                    if hasattr(content, 'text'):
+                        response_text += content.text
+
+                # Look for test clusters
+                if "test4" in response_text:
+                    cluster_name = "test4"
+                elif "test5" in response_text:
+                    cluster_name = "test5"
+
+            if not cluster_name:
+                return TestResult(
+                    plugin_name=self.get_name(),
+                    tool_name=self.tool_name,
+                    passed=False,
+                    message="No test cluster found to list databases",
+                    duration_ms=(time.time() - start_time) * 1000
+                )
+
+            # Call list_postgres_databases with cluster name
             result = await session.call_tool(
                 self.tool_name,
-                arguments={}
+                arguments={"cluster_name": cluster_name}
             )
 
             # Check if we got a response

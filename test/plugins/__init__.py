@@ -10,6 +10,12 @@ from typing import Optional, Tuple
 import re
 
 
+# Shared state for passing data between tests
+shared_test_state = {
+    "test_cluster_name": None,  # Cluster created by CreatePostgresClusterTest
+}
+
+
 @dataclass
 class TestResult:
     """Result of a test plugin execution."""
@@ -74,6 +80,8 @@ class TestPlugin:
     # Override these in your plugin
     tool_name: str = "unknown"
     description: str = "No description"
+    depends_on: list = []  # Hard dependencies - test skipped if these fail
+    run_after: list = []   # Soft dependencies - test runs after these, but not skipped if they fail
 
     async def test(self, session) -> TestResult:
         """
