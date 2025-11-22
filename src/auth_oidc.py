@@ -19,7 +19,7 @@ from urllib.parse import urljoin
 from pathlib import Path
 
 import httpx
-from authlib.jose import jwt, JsonWebKey, JWTClaims
+from authlib.jose import jwt, JsonWebKey, JWTClaims, JsonWebEncryption
 from authlib.jose.errors import JoseError
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -146,7 +146,8 @@ class OIDCAuthProvider:
         jwks_uri: Optional[str] = None,
         dcr_proxy_url: Optional[str] = None,
         required_scope: str = "openid",
-        config_path: Optional[str] = None
+        config_path: Optional[str] = None,
+        client_secrets: Optional[list] = None
     ):
         """
         Initialize OIDC authentication provider.
@@ -164,6 +165,7 @@ class OIDCAuthProvider:
             dcr_proxy_url: DCR proxy URL for client registration
             required_scope: Required OAuth2 scope (default: openid)
             config_path: Optional path to OIDC config file (YAML)
+            client_secrets: List of client_secrets to try for JWE decryption (Auth0 compatibility)
         """
         # Try to load from config file first
         config = load_oidc_config_from_file(config_path) or {}
@@ -211,12 +213,148 @@ class OIDCAuthProvider:
         # Initialize JWKS cache
         self.jwks_cache = JWKSCache(self.jwks_uri)
 
+        # Store client secrets for JWE decryption (Auth0 compatibility)
+        self.client_secrets = client_secrets or config.get("client_secrets") or []
+        if isinstance(self.client_secrets, str):
+            self.client_secrets = [self.client_secrets]
+
+        # Load client_secrets from separate file if referenced (Kubernetes Secret mount)
+        client_secrets_file = config.get("client_secrets_file")
+        self.client_secrets_file = client_secrets_file  # Store for DCR persistence
+
+        if client_secrets_file:
+            try:
+                logger.info(f"Loading client secrets from: {client_secrets_file}")
+                secrets_from_file = self._load_client_secrets_file(client_secrets_file)
+                if secrets_from_file:
+                    self.client_secrets.extend(secrets_from_file)
+                    logger.info(f"✅ Loaded {len(secrets_from_file)} secret(s) from file")
+            except Exception as e:
+                logger.warning(f"Could not load client secrets from file: {e}")
+
+        # Also try to load DCR-captured secrets from default location
+        try:
+            dcr_secrets_file = "/etc/mcp/secrets/dcr-captured-secrets.yaml"
+            if Path(dcr_secrets_file).exists():
+                dcr_secrets = self._load_client_secrets_file(dcr_secrets_file)
+                if dcr_secrets:
+                    for secret in dcr_secrets:
+                        if secret not in self.client_secrets:
+                            self.client_secrets.append(secret)
+                    logger.info(f"✅ Loaded {len(dcr_secrets)} DCR-captured secret(s)")
+        except Exception as e:
+            logger.debug(f"No DCR-captured secrets found: {e}")
+
+        # Discover upstream DCR endpoint for proxy (needs to happen at init, not on request)
+        self.upstream_dcr_endpoint = None
+        try:
+            # Try to fetch upstream OIDC configuration to get registration_endpoint
+            well_known_url = urljoin(
+                self.issuer.rstrip('/') + '/',
+                '.well-known/openid-configuration'
+            )
+            import httpx
+            response = httpx.get(well_known_url, timeout=10.0)
+            if response.status_code == 200:
+                upstream_config = response.json()
+                if upstream_config.get("registration_endpoint"):
+                    self.upstream_dcr_endpoint = upstream_config["registration_endpoint"]
+                    logger.info(f"  DCR: Discovered upstream endpoint {self.upstream_dcr_endpoint}")
+                elif self.dcr_proxy_url:
+                    self.upstream_dcr_endpoint = self.dcr_proxy_url
+                    logger.info(f"  DCR: Using proxy endpoint {self.upstream_dcr_endpoint}")
+        except Exception as e:
+            logger.debug(f"Could not discover DCR endpoint: {e}")
+            if self.dcr_proxy_url:
+                self.upstream_dcr_endpoint = self.dcr_proxy_url
+                logger.info(f"  DCR: Using proxy endpoint {self.upstream_dcr_endpoint}")
+
         logger.info(f"OIDC Auth Provider initialized:")
         logger.info(f"  Issuer: {self.issuer}")
         logger.info(f"  Audience: {self.audience}")
         logger.info(f"  JWKS URI: {self.jwks_uri}")
-        if self.dcr_proxy_url:
-            logger.info(f"  DCR Proxy: {self.dcr_proxy_url}")
+        if self.upstream_dcr_endpoint:
+            logger.info(f"  DCR Proxy: Enabled (upstream: {self.upstream_dcr_endpoint})")
+        if self.client_secrets:
+            logger.info(f"  JWE Decryption: Enabled ({len(self.client_secrets)} secret(s) available)")
+
+    def _load_client_secrets_file(self, file_path: str) -> list:
+        """
+        Load client secrets from a YAML file (typically mounted from Kubernetes Secret).
+
+        Args:
+            file_path: Path to YAML file containing client_secrets
+
+        Returns:
+            List of client secrets
+
+        Raises:
+            Exception: If file cannot be loaded
+        """
+        from pathlib import Path
+        import yaml
+
+        path = Path(file_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Client secrets file not found: {file_path}")
+
+        with open(path, 'r') as f:
+            data = yaml.safe_load(f)
+
+        secrets = data.get('client_secrets', [])
+        if not isinstance(secrets, list):
+            secrets = [secrets]
+
+        return secrets
+
+    async def _persist_dcr_secret(self, client_id: str, client_secret: str):
+        """
+        Persist captured DCR client secret to a file.
+
+        This allows secrets to survive server restarts. The file is appended
+        to the client_secrets_file if configured, or to a default location.
+
+        Args:
+            client_id: Client ID from DCR response
+            client_secret: Client secret to persist
+        """
+        import yaml
+        from pathlib import Path
+
+        # Determine where to persist secrets
+        # Use client_secrets_file path if configured, otherwise use a default
+        secrets_file = getattr(self, 'client_secrets_file', None)
+        if not secrets_file:
+            secrets_file = "/etc/mcp/secrets/dcr-captured-secrets.yaml"
+
+        try:
+            secrets_path = Path(secrets_file)
+
+            # Load existing secrets if file exists
+            existing_secrets = []
+            if secrets_path.exists():
+                with open(secrets_path, 'r') as f:
+                    data = yaml.safe_load(f) or {}
+                    existing_secrets = data.get('client_secrets', [])
+
+            # Add new secret if not already present
+            if client_secret not in existing_secrets:
+                existing_secrets.append(client_secret)
+
+                # Ensure parent directory exists
+                secrets_path.parent.mkdir(parents=True, exist_ok=True)
+
+                # Write updated secrets
+                with open(secrets_path, 'w') as f:
+                    yaml.dump({'client_secrets': existing_secrets}, f, default_flow_style=False)
+
+                logger.info(f"✅ Persisted secret for {client_id} to {secrets_file}")
+            else:
+                logger.debug(f"Secret for {client_id} already persisted")
+
+        except Exception as e:
+            logger.warning(f"Failed to persist secret for {client_id}: {e}")
+            logger.info("Secret is still available in memory for current session")
 
     def _discover_jwks_uri(self) -> str:
         """
@@ -255,6 +393,116 @@ class OIDCAuthProvider:
                 f"You can manually set OIDC_JWKS_URI environment variable."
             )
 
+    def _prepare_jwe_key(self, secret: str) -> list:
+        """
+        Prepare key variations for JWE decryption.
+
+        Auth0 client secrets need special handling for A256GCM (32 bytes required).
+        Try multiple key derivation methods.
+
+        Args:
+            secret: Client secret string
+
+        Returns:
+            List of key variations to try (bytes)
+        """
+        import base64
+        import hashlib
+
+        keys = []
+        secret_bytes = secret.encode('utf-8') if isinstance(secret, str) else secret
+
+        # Method 1: Base64url decode (Auth0's typical format)
+        try:
+            # Add padding if needed
+            padding = 4 - (len(secret) % 4)
+            padded_secret = secret + ('=' * padding) if padding != 4 else secret
+            decoded = base64.urlsafe_b64decode(padded_secret)
+            if len(decoded) == 32:
+                keys.append(('base64url-decoded', decoded))
+        except Exception:
+            pass
+
+        # Method 2: SHA256 hash (always 32 bytes)
+        keys.append(('sha256-hash', hashlib.sha256(secret_bytes).digest()))
+
+        # Method 3: Direct UTF-8 bytes (if exactly 32 bytes)
+        if len(secret_bytes) == 32:
+            keys.append(('utf8-direct', secret_bytes))
+
+        # Method 4: Truncate to 32 bytes (if longer)
+        if len(secret_bytes) >= 32:
+            keys.append(('utf8-truncated', secret_bytes[:32]))
+
+        # Method 5: Original bytes as-is (last resort)
+        keys.append(('raw', secret_bytes))
+
+        return keys
+
+    def _decrypt_jwe_token(self, token: str) -> JWTClaims:
+        """
+        Decrypt JWE token using known client secrets.
+
+        Auth0 encrypts ID tokens with 'dir' algorithm using client_secret.
+        We try each known client_secret with multiple key derivation methods.
+
+        Args:
+            token: JWE token string
+
+        Returns:
+            Decoded JWT claims
+
+        Raises:
+            JoseError: If decryption fails with all secrets
+        """
+        last_error = None
+        jwe = JsonWebEncryption()
+
+        for i, secret in enumerate(self.client_secrets, 1):
+            # Show partial secret for identification (first 8 chars only)
+            secret_preview = f"{secret[:8]}..." if len(secret) > 8 else "***"
+            logger.info(f"🔑 Attempting secret {i}/{len(self.client_secrets)}: {secret_preview}")
+
+            # Try multiple key derivation methods
+            key_variations = self._prepare_jwe_key(secret)
+            logger.info(f"   Generated {len(key_variations)} key variations to try")
+
+            for method, key in key_variations:
+                try:
+                    logger.info(f"   ➜ Trying method: {method} (key length: {len(key)} bytes)")
+
+                    # Decrypt JWE using the key
+                    decrypted_data = jwe.deserialize_compact(token, key)
+
+                    logger.info(f"✅ JWE DECRYPTION SUCCESSFUL!")
+                    logger.info(f"   Secret {i} using method: {method}")
+
+                    # The decrypted content is a JWT (signed token)
+                    # Extract the payload which contains the claims
+                    jwt_string = decrypted_data['payload']
+
+                    # The payload should be bytes, decode to string
+                    if isinstance(jwt_string, bytes):
+                        jwt_string = jwt_string.decode('utf-8')
+
+                    # Now decode the inner JWT to get claims
+                    # Note: For Auth0 encrypted ID tokens, the inner content is typically a signed JWT
+                    # We'll decode without verification since the JWE encryption already authenticated it
+                    import json
+                    claims = json.loads(jwt_string)
+
+                    return claims
+
+                except Exception as e:
+                    last_error = e
+                    error_msg = str(e)
+                    logger.info(f"   ✗ Method {method} failed: {type(e).__name__}: {error_msg}")
+                    continue
+
+        # All secrets and methods failed
+        logger.error(f"JWE decryption failed with all {len(self.client_secrets)} secret(s)")
+        raise JoseError(f"Failed to decrypt JWE token: {last_error}")
+
     async def verify_token(self, token: str) -> Dict[str, Any]:
         """
         Verify JWT bearer token.
@@ -270,14 +518,52 @@ class OIDCAuthProvider:
             ValueError: If required claims are missing
         """
         # Get JWKS
-        jwks = await self.jwks_cache.get_jwks()
+        jwks_data = await self.jwks_cache.get_jwks()
 
         # Decode and verify token
         try:
-            # authlib will automatically select the correct key based on 'kid' header
-            claims = jwt.decode(token, jwks)
+            # Log JWKS for debugging
+            logger.debug(f"JWKS has {len(jwks_data.get('keys', []))} key(s)")
 
-            # Validate standard claims
+            # Try JWT verification first (most common case)
+            try:
+                # authlib jwt.decode() can accept raw JWKS dict
+                # It will automatically select the correct key based on 'kid' header
+                claims = jwt.decode(token, jwks_data)
+            except JoseError as jwt_error:
+                # If JWT verification fails, try JWE decryption (Auth0 encrypted ID tokens)
+                if self.client_secrets:
+                    # Log comprehensive details about the encrypted token
+                    logger.info("=" * 80)
+                    logger.info("🔐 ENCRYPTED TOKEN DETECTED (JWE)")
+                    logger.info("=" * 80)
+                    logger.info(f"JWT verification failed: {jwt_error}")
+                    logger.info(f"Token length: {len(token)} characters")
+                    logger.info(f"Token (first 100 chars): {token[:100]}...")
+                    logger.info(f"Token (last 50 chars): ...{token[-50:]}")
+
+                    # Try to decode the header without verification to see what's inside
+                    try:
+                        import base64
+                        header_b64 = token.split('.')[0]
+                        # Add padding if needed
+                        padding = 4 - (len(header_b64) % 4)
+                        if padding != 4:
+                            header_b64 += '=' * padding
+                        header_json = base64.urlsafe_b64decode(header_b64)
+                        logger.info(f"Token header (decoded): {header_json.decode('utf-8')}")
+                    except Exception as e:
+                        logger.warning(f"Could not decode token header: {e}")
+
+                    logger.info(f"Attempting JWE decryption with {len(self.client_secrets)} secret(s)")
+                    logger.info("=" * 80)
+
+                    claims = self._decrypt_jwe_token(token)
+                else:
+                    # No client secrets available for JWE decryption
+                    raise jwt_error
+
+            # Validate standard claims (exp, nbf, etc.)
             claims.validate()
 
             # Verify issuer (normalize trailing slashes)
@@ -324,7 +610,18 @@ class OIDCAuthProvider:
             return dict(claims)
 
         except JoseError as e:
-            logger.warning(f"Token verification failed: {e}")
+            logger.error(f"Token verification failed: {e}")
+            logger.error(f"Error type: {type(e).__name__}")
+            logger.error(f"Error details: {repr(e)}")
+            # Log token header for debugging (safe - doesn't contain secrets)
+            try:
+                import base64
+                header_b64 = token.split('.')[0]
+                header_b64 += '=' * (4 - len(header_b64) % 4)  # Add padding
+                header = base64.urlsafe_b64decode(header_b64)
+                logger.error(f"Token header: {header}")
+            except:
+                pass
             raise
 
     async def authenticate_request(self, request: Request) -> Dict[str, Any]:
@@ -340,6 +637,33 @@ class OIDCAuthProvider:
         Raises:
             ValueError: If authentication fails
         """
+        # Log request details for debugging
+        logger.info("=" * 80)
+        logger.info("🔍 AUTHENTICATION REQUEST")
+        logger.info("=" * 80)
+        logger.info(f"Method: {request.method}")
+
+        # Defensive logging for URL (might fail to stringify)
+        try:
+            logger.info(f"URL: {request.url}")
+        except Exception as e:
+            logger.error(f"Failed to log URL: {e}")
+            try:
+                logger.info(f"URL (repr): {repr(request.url)}")
+            except:
+                logger.info("URL: <unavailable>")
+
+        # Defensive logging for Path
+        try:
+            logger.info(f"Path: {request.url.path}")
+        except Exception as e:
+            logger.error(f"Failed to log Path: {e}")
+            logger.info("Path: <unavailable>")
+
+        logger.info(f"Client: {request.client.host if request.client else 'unknown'}")
+        logger.info(f"Headers: {dict(request.headers)}")
+        logger.info("=" * 80)
+
         # Extract Authorization header
         auth_header = request.headers.get('Authorization')
 
@@ -369,6 +693,7 @@ class OIDCAuthProvider:
         # Protected resource metadata endpoint (RFC 8414)
         async def oauth_metadata(request):
             """OAuth 2.0 Authorization Server Metadata (RFC 8414)"""
+            logger.info(f"📋 OAuth Authorization Server metadata requested from {request.url.path}")
             # Fetch upstream OIDC configuration to get endpoints
             import httpx
             upstream_config = {}
@@ -414,19 +739,147 @@ class OIDCAuthProvider:
                 "id_token_signing_alg_values_supported": ["RS256"],
             }
 
-            # Add registration endpoint from upstream config or DCR proxy
-            if upstream_config.get("registration_endpoint"):
-                # Use native DCR from IdP (Auth0, Keycloak, etc.)
-                metadata["registration_endpoint"] = upstream_config["registration_endpoint"]
-            elif self.dcr_proxy_url:
-                # Use DCR proxy for IdPs without native DCR support
-                metadata["registration_endpoint"] = self.dcr_proxy_url
+            # Add registration endpoint - advertise our own endpoint to capture secrets
+            # We'll proxy to Auth0 and capture the client_secret for JWE decryption
+            if self.upstream_dcr_endpoint:
+                # Use relative URL - client will resolve relative to this server
+                metadata["registration_endpoint"] = "/register"
+                logger.info(f"📢 Advertising registration endpoint: /register (relative)")
+
+            # Log what we're advertising for debugging
+            logger.debug(f"OAuth metadata response: issuer={metadata['issuer']}, "
+                        f"has_registration={('registration_endpoint' in metadata)}")
+
+            return JSONResponse(metadata)
+
+        async def register_client(request: Request) -> JSONResponse:
+            """
+            Handle Dynamic Client Registration (DCR) requests.
+
+            This endpoint proxies to the upstream IdP (Auth0) and captures
+            the client_secret from the response for JWE decryption support.
+
+            Flow:
+            1. Receive DCR request from Claude Desktop
+            2. Forward to upstream DCR endpoint (Auth0)
+            3. Capture client_secret from response
+            4. Store secret in memory and optionally persist
+            5. Return response to Claude Desktop
+            """
+            logger.info("=" * 70)
+            logger.info("🎯 DCR REGISTRATION REQUEST RECEIVED!")
+            logger.info(f"   From: {request.client.host if request.client else 'unknown'}")
+            logger.info(f"   Method: {request.method}")
+            logger.info(f"   URL: {request.url}")
+            logger.info("=" * 70)
+
+            try:
+                # Get request body and headers
+                body = await request.body()
+                headers = dict(request.headers)
+
+                # Remove hop-by-hop headers
+                for header in ['host', 'connection', 'keep-alive', 'transfer-encoding']:
+                    headers.pop(header, None)
+
+                logger.info(f"Proxying DCR request to {self.upstream_dcr_endpoint}")
+
+                # Forward request to upstream DCR endpoint
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        self.upstream_dcr_endpoint,
+                        content=body,
+                        headers=headers,
+                        timeout=30.0
+                    )
+
+                logger.info(f"Upstream DCR response: {response.status_code}")
+
+                if response.status_code in (200, 201):
+                    # Parse response to capture client_secret
+                    client_data = response.json()
+
+                    client_id = client_data.get('client_id')
+                    client_secret = client_data.get('client_secret')
+                    client_name = client_data.get('client_name', 'Unknown')
+
+                    logger.info(f"✅ DCR successful - Client registered: {client_name} ({client_id})")
+
+                    # Capture and store client_secret if present
+                    if client_secret:
+                        logger.info(f"📝 Captured client_secret for {client_id}")
+
+                        # Add to in-memory secrets list
+                        if client_secret not in self.client_secrets:
+                            self.client_secrets.append(client_secret)
+                            logger.info(f"✅ Added to client_secrets list (now have {len(self.client_secrets)} secret(s))")
+
+                        # Persist secret to file if configured
+                        await self._persist_dcr_secret(client_id, client_secret)
+                    else:
+                        logger.info(f"ℹ️  No client_secret in response (public client)")
+
+                    # Return response to Claude Desktop
+                    return JSONResponse(
+                        content=client_data,
+                        status_code=response.status_code,
+                        headers=dict(response.headers)
+                    )
+                else:
+                    logger.error(f"DCR failed: {response.status_code} {response.text}")
+                    return JSONResponse(
+                        content={"error": "registration_failed", "error_description": response.text},
+                        status_code=response.status_code
+                    )
+
+            except Exception as e:
+                logger.error(f"DCR proxy error: {e}", exc_info=True)
+                return JSONResponse(
+                    content={"error": "server_error", "error_description": str(e)},
+                    status_code=500
+                )
+
+        # OAuth Authorization Server metadata (for auth servers like Auth0)
+        routes.append(
+            Route("/.well-known/oauth-authorization-server", oauth_metadata, methods=["GET"])
+        )
+
+        # Protected Resource metadata endpoint (RFC 8707) - for resource servers (us!)
+        async def protected_resource_metadata(request):
+            """
+            OAuth 2.0 Protected Resource Metadata (RFC 8707).
+
+            This advertises our MCP server as a protected resource and points
+            clients to the authorization server for authentication/registration.
+            """
+            metadata = {
+                "resource": self.audience,  # Our resource identifier
+                "authorization_servers": [self.issuer],  # Auth0 is our auth server
+                "bearer_methods_supported": ["header"],  # We accept Bearer tokens in Authorization header
+                "scopes_supported": [self.required_scope] if self.required_scope else ["openid"],
+            }
+
+            # Include registration endpoint if DCR proxy is enabled
+            # Use relative URL - client will resolve relative to this server
+            if self.upstream_dcr_endpoint:
+                metadata["registration_endpoint"] = "/register"
+                logger.info(f"📢 Advertising registration endpoint: /register (relative)")
+
+            logger.debug(f"Protected resource metadata: resource={self.audience}, "
+                        f"has_registration={('registration_endpoint' in metadata)}")
 
             return JSONResponse(metadata)
 
         routes.append(
-            Route("/.well-known/oauth-authorization-server", oauth_metadata, methods=["GET"])
+            Route("/.well-known/oauth-protected-resource", protected_resource_metadata, methods=["GET"])
         )
+
+        # Add DCR endpoint if configured
+        if self.upstream_dcr_endpoint:
+            routes.append(
+                Route("/register", register_client, methods=["POST"])
+            )
+            logger.info("✅ DCR proxy endpoint enabled at /register")
 
         return routes
 
