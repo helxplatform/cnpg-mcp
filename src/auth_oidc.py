@@ -145,6 +145,7 @@ class OIDCAuthProvider:
         audience: Optional[str] = None,
         jwks_uri: Optional[str] = None,
         dcr_proxy_url: Optional[str] = None,
+        public_url: Optional[str] = None,
         required_scope: str = "openid",
         config_path: Optional[str] = None,
         client_secrets: Optional[list] = None
@@ -163,6 +164,7 @@ class OIDCAuthProvider:
             audience: Expected audience claim (overrides config file and env var)
             jwks_uri: JWKS URI (overrides auto-discovery)
             dcr_proxy_url: DCR proxy URL for client registration
+            public_url: Public URL of this server for OAuth metadata (overrides config file and env var)
             required_scope: Required OAuth2 scope (default: openid)
             config_path: Optional path to OIDC config file (YAML)
             client_secrets: List of client_secrets to try for JWE decryption (Auth0 compatibility)
@@ -175,6 +177,25 @@ class OIDCAuthProvider:
         self.audience = audience or config.get("audience") or os.getenv("OIDC_AUDIENCE")
         self.jwks_uri = jwks_uri or config.get("jwks_uri") or os.getenv("OIDC_JWKS_URI")
         self.dcr_proxy_url = dcr_proxy_url or config.get("dcr_proxy_url") or os.getenv("DCR_PROXY_URL")
+        self.public_url = public_url or config.get("public_url") or os.getenv("PUBLIC_URL")
+        # Management API credentials for updating DCR-created clients
+        self.mgmt_client_id = config.get("mgmt_client_id") or os.getenv("AUTH0_MGMT_CLIENT_ID")
+        self.mgmt_client_secret = config.get("mgmt_client_secret") or os.getenv("AUTH0_MGMT_CLIENT_SECRET")
+
+        # Load management API secret from file if configured
+        mgmt_secret_file = config.get("mgmt_client_secret_file")
+        if mgmt_secret_file:
+            try:
+                from pathlib import Path
+                secret_path = Path(mgmt_secret_file)
+                if secret_path.exists():
+                    self.mgmt_client_secret = secret_path.read_text().strip()
+                    logger.info(f"✅ Loaded management secret from: {mgmt_secret_file}")
+                else:
+                    logger.warning(f"Management secret file not found: {mgmt_secret_file}")
+            except Exception as e:
+                logger.warning(f"Could not load management secret from file: {e}")
+
         # Don't require scope by default - M2M tokens typically don't have 'openid' scope
         self.required_scope = required_scope or config.get("scope") or os.getenv("OIDC_SCOPE")
 
@@ -273,10 +294,107 @@ class OIDCAuthProvider:
         logger.info(f"  Issuer: {self.issuer}")
         logger.info(f"  Audience: {self.audience}")
         logger.info(f"  JWKS URI: {self.jwks_uri}")
+        if self.public_url:
+            logger.info(f"  Public URL: {self.public_url}")
         if self.upstream_dcr_endpoint:
             logger.info(f"  DCR Proxy: Enabled (upstream: {self.upstream_dcr_endpoint})")
         if self.client_secrets:
             logger.info(f"  JWE Decryption: Enabled ({len(self.client_secrets)} secret(s) available)")
+
+    async def _get_management_api_token(self) -> str:
+        """
+        Get Auth0 Management API access token using client credentials flow.
+
+        Uses the first client_secret as the Management API client credentials.
+        Assumes the client has been granted access to the Management API.
+
+        Returns:
+            Management API access token
+
+        Raises:
+            Exception: If token request fails
+        """
+        if not self.mgmt_client_id:
+            raise ValueError("AUTH0_MGMT_CLIENT_ID not configured - cannot get Management API token")
+
+        if not self.mgmt_client_secret:
+            raise ValueError("AUTH0_MGMT_CLIENT_SECRET not configured - cannot get Management API token")
+
+        # Extract domain from issuer (e.g., "https://dev-15i-ae3b.auth0.com")
+        domain = self.issuer.rstrip('/')
+
+        # Management API audience
+        audience = f"{domain}/api/v2/"
+
+        import httpx
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{domain}/oauth/token",
+                json={
+                    "grant_type": "client_credentials",
+                    "client_id": self.mgmt_client_id,
+                    "client_secret": self.mgmt_client_secret,
+                    "audience": audience
+                },
+                timeout=10.0
+            )
+            response.raise_for_status()
+            return response.json()["access_token"]
+
+    async def _update_client_type(self, client_id: str, app_type: str = "native") -> bool:
+        """
+        Update Auth0 client type using Management API.
+
+        This converts a confidential "generic" client created by DCR into
+        a public client (native or spa), which prevents token encryption.
+
+        Args:
+            client_id: The client ID to update
+            app_type: Target app type ("native" or "spa")
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Get Management API token
+            access_token = await self._get_management_api_token()
+
+            # Extract domain from issuer
+            domain = self.issuer.rstrip('/')
+
+            # Update client via Management API
+            # Set app_type to native/spa AND explicitly disable token encryption
+            import httpx
+            async with httpx.AsyncClient() as client:
+                patch_data = {
+                    "app_type": app_type,
+                    "token_endpoint_auth_method": "none",  # Ensure no client authentication
+                    # Explicitly configure JWT settings to disable encryption
+                    "jwt_configuration": {
+                        "alg": "RS256"  # Use RS256 signing, not encryption
+                    }
+                }
+
+                response = await client.patch(
+                    f"{domain}/api/v2/clients/{client_id}",
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Content-Type": "application/json"
+                    },
+                    json=patch_data,
+                    timeout=10.0
+                )
+
+                if response.status_code == 200:
+                    logger.info(f"✅ Updated client {client_id} to app_type: {app_type}")
+                    return True
+                else:
+                    logger.error(f"Failed to update client type: {response.status_code} {response.text}")
+                    return False
+
+        except Exception as e:
+            logger.error(f"Error updating client type: {e}")
+            return False
 
     def _load_client_secrets_file(self, file_path: str) -> list:
         """
@@ -501,7 +619,16 @@ class OIDCAuthProvider:
 
         # All secrets and methods failed
         logger.error(f"JWE decryption failed with all {len(self.client_secrets)} secret(s)")
-        raise JoseError(f"Failed to decrypt JWE token: {last_error}")
+
+        # Provide helpful error message for cached encrypted tokens
+        error_msg = (
+            "Cannot decrypt JWE token. This may be a cached credential from a previous "
+            "confidential client registration. Please disconnect and reconnect to create "
+            "a new public client that uses unencrypted tokens."
+        )
+        logger.error(f"💡 Suggestion: {error_msg}")
+
+        raise JoseError(error_msg)
 
     async def verify_token(self, token: str) -> Dict[str, Any]:
         """
@@ -517,7 +644,19 @@ class OIDCAuthProvider:
             JoseError: If token is invalid
             ValueError: If required claims are missing
         """
-        # Get JWKS
+        # Check token format BEFORE fetching JWKS
+        # JWE tokens have 5 parts (header.encryptedKey.iv.ciphertext.authTag)
+        # JWT tokens have 3 parts (header.payload.signature)
+        token_parts = token.split('.')
+
+        if len(token_parts) == 5:
+            # This is a JWE token (5 parts - encrypted) - reject immediately
+            raise JoseError("JWE_TOKEN_DETECTED: Cannot decrypt JWE token")
+        elif len(token_parts) != 3:
+            # Invalid token format
+            raise JoseError(f"Invalid token format: expected 3 parts (JWT), got {len(token_parts)}")
+
+        # Get JWKS for JWT verification
         jwks_data = await self.jwks_cache.get_jwks()
 
         # Decode and verify token
@@ -525,54 +664,28 @@ class OIDCAuthProvider:
             # Log JWKS for debugging
             logger.debug(f"JWKS has {len(jwks_data.get('keys', []))} key(s)")
 
-            # Try JWT verification first (most common case)
-            try:
-                # authlib jwt.decode() can accept raw JWKS dict
-                # It will automatically select the correct key based on 'kid' header
-                claims = jwt.decode(token, jwks_data)
-            except JoseError as jwt_error:
-                # If JWT verification fails, try JWE decryption (Auth0 encrypted ID tokens)
-                if self.client_secrets:
-                    # Log comprehensive details about the encrypted token
-                    logger.info("=" * 80)
-                    logger.info("🔐 ENCRYPTED TOKEN DETECTED (JWE)")
-                    logger.info("=" * 80)
-                    logger.info(f"JWT verification failed: {jwt_error}")
-                    logger.info(f"Token length: {len(token)} characters")
-                    logger.info(f"Token (first 100 chars): {token[:100]}...")
-                    logger.info(f"Token (last 50 chars): ...{token[-50:]}")
-
-                    # Try to decode the header without verification to see what's inside
-                    try:
-                        import base64
-                        header_b64 = token.split('.')[0]
-                        # Add padding if needed
-                        padding = 4 - (len(header_b64) % 4)
-                        if padding != 4:
-                            header_b64 += '=' * padding
-                        header_json = base64.urlsafe_b64decode(header_b64)
-                        logger.info(f"Token header (decoded): {header_json.decode('utf-8')}")
-                    except Exception as e:
-                        logger.warning(f"Could not decode token header: {e}")
-
-                    logger.info(f"Attempting JWE decryption with {len(self.client_secrets)} secret(s)")
-                    logger.info("=" * 80)
-
-                    claims = self._decrypt_jwe_token(token)
-                else:
-                    # No client secrets available for JWE decryption
-                    raise jwt_error
+            # Verify JWT signature using JWKS
+            # authlib jwt.decode() can accept raw JWKS dict
+            # It will automatically select the correct key based on 'kid' header
+            claims = jwt.decode(token, jwks_data)
 
             # Validate standard claims (exp, nbf, etc.)
             claims.validate()
 
             # Verify issuer (normalize trailing slashes)
+            # Accept tokens from EITHER the backend issuer (Auth0) OR our advertised issuer
             token_issuer = claims.get('iss', '').rstrip('/')
-            expected_issuer = self.issuer.rstrip('/')
+            backend_issuer = self.issuer.rstrip('/')
+            advertised_issuer = self.public_url.rstrip('/') if self.public_url else None
 
-            if token_issuer != expected_issuer:
+            # Accept tokens from backend (Auth0) or advertised issuer (us)
+            valid_issuers = [backend_issuer]
+            if advertised_issuer and advertised_issuer != backend_issuer:
+                valid_issuers.append(advertised_issuer)
+
+            if token_issuer not in valid_issuers:
                 raise ValueError(
-                    f"Invalid issuer. Expected '{expected_issuer}', got '{token_issuer}'"
+                    f"Invalid issuer. Expected one of {valid_issuers}, got '{token_issuer}'"
                 )
 
             # Verify audience
@@ -610,18 +723,7 @@ class OIDCAuthProvider:
             return dict(claims)
 
         except JoseError as e:
-            logger.error(f"Token verification failed: {e}")
-            logger.error(f"Error type: {type(e).__name__}")
-            logger.error(f"Error details: {repr(e)}")
-            # Log token header for debugging (safe - doesn't contain secrets)
-            try:
-                import base64
-                header_b64 = token.split('.')[0]
-                header_b64 += '=' * (4 - len(header_b64) % 4)  # Add padding
-                header = base64.urlsafe_b64decode(header_b64)
-                logger.error(f"Token header: {header}")
-            except:
-                pass
+            # Just re-raise - specific error details already logged in JWE detection
             raise
 
     async def authenticate_request(self, request: Request) -> Dict[str, Any]:
@@ -637,33 +739,6 @@ class OIDCAuthProvider:
         Raises:
             ValueError: If authentication fails
         """
-        # Log request details for debugging
-        logger.info("=" * 80)
-        logger.info("🔍 AUTHENTICATION REQUEST")
-        logger.info("=" * 80)
-        logger.info(f"Method: {request.method}")
-
-        # Defensive logging for URL (might fail to stringify)
-        try:
-            logger.info(f"URL: {request.url}")
-        except Exception as e:
-            logger.error(f"Failed to log URL: {e}")
-            try:
-                logger.info(f"URL (repr): {repr(request.url)}")
-            except:
-                logger.info("URL: <unavailable>")
-
-        # Defensive logging for Path
-        try:
-            logger.info(f"Path: {request.url.path}")
-        except Exception as e:
-            logger.error(f"Failed to log Path: {e}")
-            logger.info("Path: <unavailable>")
-
-        logger.info(f"Client: {request.client.host if request.client else 'unknown'}")
-        logger.info(f"Headers: {dict(request.headers)}")
-        logger.info("=" * 80)
-
         # Extract Authorization header
         auth_header = request.headers.get('Authorization')
 
@@ -678,8 +753,50 @@ class OIDCAuthProvider:
 
         token = parts[1]
 
-        # Verify token
-        return await self.verify_token(token)
+        # Verify token (log details only on error)
+        try:
+            return await self.verify_token(token)
+        except Exception as e:
+            # Log detailed request info for debugging authentication failures
+            logger.error("=" * 80)
+            logger.error("❌ AUTHENTICATION FAILED")
+            logger.error("=" * 80)
+            logger.error(f"Error: {e}")
+
+            # If it's a JWE token error, decode and show the header
+            error_msg = str(e)
+            if "JWE_TOKEN_DETECTED" in error_msg:
+                try:
+                    import base64
+                    token_parts = token.split('.')
+                    if len(token_parts) == 5:
+                        header_b64 = token_parts[0]
+                        padding = 4 - (len(header_b64) % 4)
+                        if padding != 4:
+                            header_b64 += '=' * padding
+                        header_json = base64.urlsafe_b64decode(header_b64)
+                        logger.error(f"🔐 JWE Token Header: {header_json.decode('utf-8')}")
+                except Exception as header_error:
+                    logger.error(f"Could not decode JWE header: {header_error}")
+
+            logger.error(f"Method: {request.method}")
+            logger.error(f"URL: {request.url}")
+            logger.error(f"Path: {request.url.path}")
+            logger.error(f"Client: {request.client.host if request.client else 'unknown'}")
+
+            # Log POST body if present
+            if request.method == "POST":
+                try:
+                    body = await request.body()
+                    logger.error(f"POST Body ({len(body)} bytes): {body.decode('utf-8', errors='replace')[:500]}")
+                except Exception as body_error:
+                    logger.error(f"Could not read POST body: {body_error}")
+
+            logger.error(f"Headers: {dict(request.headers)}")
+            logger.error("=" * 80)
+
+            # Re-raise the original exception
+            raise
 
     def get_metadata_routes(self) -> list:
         """
@@ -726,11 +843,15 @@ class OIDCAuthProvider:
             if "openid" not in scopes_supported:
                 scopes_supported.append("openid")
 
+            # Use public_url as advertised issuer if configured, otherwise use backend issuer
+            # This allows us to appear as the authorization server while proxying to Auth0
+            advertised_issuer = self.public_url.rstrip('/') if self.public_url else self.issuer
+
             metadata = {
-                "issuer": self.issuer,
-                "authorization_endpoint": authorization_endpoint,
-                "token_endpoint": token_endpoint,
-                "jwks_uri": self.jwks_uri,
+                "issuer": advertised_issuer,  # Advertise ourselves as issuer
+                "authorization_endpoint": authorization_endpoint,  # Auth0
+                "token_endpoint": token_endpoint,  # Auth0
+                "jwks_uri": self.jwks_uri,  # Auth0
                 "scopes_supported": scopes_supported,
                 "response_types_supported": ["code"],
                 "grant_types_supported": ["authorization_code", "client_credentials"],
@@ -742,9 +863,14 @@ class OIDCAuthProvider:
             # Add registration endpoint - advertise our own endpoint to capture secrets
             # We'll proxy to Auth0 and capture the client_secret for JWE decryption
             if self.upstream_dcr_endpoint:
-                # Use relative URL - client will resolve relative to this server
-                metadata["registration_endpoint"] = "/register"
-                logger.info(f"📢 Advertising registration endpoint: /register (relative)")
+                # Use full URL if public_url is configured, otherwise use relative URL
+                if self.public_url:
+                    registration_url = f"{self.public_url.rstrip('/')}/register"
+                    metadata["registration_endpoint"] = registration_url
+                    logger.info(f"📢 Advertising registration endpoint: {registration_url} (absolute)")
+                else:
+                    metadata["registration_endpoint"] = "/register"
+                    logger.info(f"📢 Advertising registration endpoint: /register (relative)")
 
             # Log what we're advertising for debugging
             logger.debug(f"OAuth metadata response: issuer={metadata['issuer']}, "
@@ -778,17 +904,49 @@ class OIDCAuthProvider:
                 body = await request.body()
                 headers = dict(request.headers)
 
+                # Parse and modify DCR request to force public client (SPA) type
+                try:
+                    import json
+                    dcr_request = json.loads(body)
+
+                    logger.info(f"Original DCR request: {dcr_request}")
+
+                    # CRITICAL: Force public client parameters
+                    # This prevents Auth0 from encrypting ID tokens with client_secret
+                    dcr_request['token_endpoint_auth_method'] = 'none'
+
+                    # RFC 7591 standard parameter for public clients
+                    dcr_request['application_type'] = 'native'
+
+                    # Auth0-specific parameter for SPA clients
+                    dcr_request['app_type'] = 'spa'
+
+                    logger.info("✏️  Modified DCR request:")
+                    logger.info(f"   → token_endpoint_auth_method: none")
+                    logger.info(f"   → application_type: native (RFC 7591 public client)")
+                    logger.info(f"   → app_type: spa (Auth0-specific)")
+                    logger.info(f"📤 Full modified DCR request body: {dcr_request}")
+
+                    # Re-encode modified request
+                    modified_body = json.dumps(dcr_request).encode('utf-8')
+                    headers['content-length'] = str(len(modified_body))
+                    logger.info(f"📤 Modified body length: {len(modified_body)} bytes")
+
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Could not parse DCR request as JSON: {e}")
+                    modified_body = body  # Use original if parsing fails
+
                 # Remove hop-by-hop headers
                 for header in ['host', 'connection', 'keep-alive', 'transfer-encoding']:
                     headers.pop(header, None)
 
-                logger.info(f"Proxying DCR request to {self.upstream_dcr_endpoint}")
+                logger.info(f"Proxying modified DCR request to {self.upstream_dcr_endpoint}")
 
-                # Forward request to upstream DCR endpoint
+                # Forward modified request to upstream DCR endpoint
                 async with httpx.AsyncClient() as client:
                     response = await client.post(
                         self.upstream_dcr_endpoint,
-                        content=body,
+                        content=modified_body,
                         headers=headers,
                         timeout=30.0
                     )
@@ -805,7 +963,7 @@ class OIDCAuthProvider:
 
                     logger.info(f"✅ DCR successful - Client registered: {client_name} ({client_id})")
 
-                    # Capture and store client_secret if present
+                    # Capture and store client_secret FIRST (before we remove it from response)
                     if client_secret:
                         logger.info(f"📝 Captured client_secret for {client_id}")
 
@@ -819,11 +977,37 @@ class OIDCAuthProvider:
                     else:
                         logger.info(f"ℹ️  No client_secret in response (public client)")
 
+                    # CRITICAL: Update client type to "native" (public client) via Management API
+                    # Auth0 ignores application_type during DCR and creates confidential clients
+                    # We must update it post-creation to prevent token encryption
+                    if self.mgmt_client_id:
+                        logger.info(f"🔧 Updating client {client_id} to public (native) type...")
+                        update_success = await self._update_client_type(client_id, app_type="native")
+
+                        if update_success:
+                            # CRITICAL: Remove client_secret from response since we converted to public client
+                            # Claude Desktop will cache and use the secret if present, causing Auth0 to encrypt tokens
+                            if 'client_secret' in client_data:
+                                logger.info(f"🔓 Removing client_secret from response (converted to public client)")
+                                del client_data['client_secret']
+                            # Also ensure token_endpoint_auth_method is set to "none" in response
+                            client_data['token_endpoint_auth_method'] = 'none'
+                            client_data['app_type'] = 'native'
+                        else:
+                            logger.error("⚠️  Failed to update client type - client may encrypt tokens!")
+                    else:
+                        logger.warning("⚠️  AUTH0_MGMT_CLIENT_ID not configured - cannot update client type")
+                        logger.warning("   Client will remain confidential - tokens will be encrypted!")
+
+                    # Prepare response headers (remove Content-Length since we modified the body)
+                    response_headers = dict(response.headers)
+                    response_headers.pop('content-length', None)  # Let JSONResponse recalculate
+
                     # Return response to Claude Desktop
                     return JSONResponse(
                         content=client_data,
                         status_code=response.status_code,
-                        headers=dict(response.headers)
+                        headers=response_headers
                     )
                 else:
                     logger.error(f"DCR failed: {response.status_code} {response.text}")
@@ -852,18 +1036,26 @@ class OIDCAuthProvider:
             This advertises our MCP server as a protected resource and points
             clients to the authorization server for authentication/registration.
             """
+            # Use public_url as advertised auth server if configured, otherwise use backend issuer
+            advertised_issuer = self.public_url.rstrip('/') if self.public_url else self.issuer
+
             metadata = {
                 "resource": self.audience,  # Our resource identifier
-                "authorization_servers": [self.issuer],  # Auth0 is our auth server
+                "authorization_servers": [advertised_issuer],  # Advertise ourselves as auth server
                 "bearer_methods_supported": ["header"],  # We accept Bearer tokens in Authorization header
                 "scopes_supported": [self.required_scope] if self.required_scope else ["openid"],
             }
 
             # Include registration endpoint if DCR proxy is enabled
-            # Use relative URL - client will resolve relative to this server
+            # Use full URL if public_url is configured, otherwise use relative URL
             if self.upstream_dcr_endpoint:
-                metadata["registration_endpoint"] = "/register"
-                logger.info(f"📢 Advertising registration endpoint: /register (relative)")
+                if self.public_url:
+                    registration_url = f"{self.public_url.rstrip('/')}/register"
+                    metadata["registration_endpoint"] = registration_url
+                    logger.info(f"📢 Advertising registration endpoint: {registration_url} (absolute)")
+                else:
+                    metadata["registration_endpoint"] = "/register"
+                    logger.info(f"📢 Advertising registration endpoint: /register (relative)")
 
             logger.debug(f"Protected resource metadata: resource={self.audience}, "
                         f"has_registration={('registration_endpoint' in metadata)}")
@@ -902,14 +1094,27 @@ class OIDCAuthMiddleware(BaseHTTPMiddleware):
         """
         super().__init__(app)
         self.auth_provider = auth_provider
-        self.exclude_paths = exclude_paths or ["/healthz", "/readyz", "/.well-known/"]
+        self.exclude_paths = exclude_paths or ["/healthz", "/readyz", "/.well-known/", "/register"]
 
     async def dispatch(self, request: Request, call_next):
         """Process request with authentication."""
 
+        # Check if this is a health check endpoint (reduce log spam)
+        is_health_check = request.url.path in ["/healthz", "/readyz"]
+
+        # Log requests (use DEBUG for health checks to reduce spam)
+        if is_health_check:
+            logger.debug(f"→ {request.method} {request.url.path} (client: {request.client.host if request.client else 'unknown'})")
+        else:
+            logger.info(f"→ {request.method} {request.url.path} (client: {request.client.host if request.client else 'unknown'})")
+
         # Skip authentication for excluded paths
         for excluded in self.exclude_paths:
             if request.url.path.startswith(excluded):
+                if not is_health_check:
+                    logger.info(f"  ↳ Skipping auth (excluded path: {excluded})")
+                else:
+                    logger.debug(f"  ↳ Skipping auth (excluded path: {excluded})")
                 return await call_next(request)
 
         # Authenticate request
@@ -949,16 +1154,35 @@ class OIDCAuthMiddleware(BaseHTTPMiddleware):
 
         except JoseError as e:
             # Token verification failed - return 401 with WWW-Authenticate header
-            logger.warning(f"Token verification failed for {request.url.path}: {e}")
+            error_description = str(e) if str(e) else "Token verification failed"
+
+            # Per RFC 6749: Return "invalid_client" for JWE token detection
+            # This signals to the client that it should re-register via DCR
+            if "JWE_TOKEN_DETECTED" in error_description:
+                error_code = "invalid_client"
+            else:
+                error_code = "invalid_token"
+
+            # Build response
+            response_content = {
+                "error": error_code,
+                "error_description": error_description
+            }
+            response_headers = {
+                "WWW-Authenticate": f'Bearer realm="MCP API", error="{error_code}", error_description="{error_description}"'
+            }
+
+            # Log the complete response being returned
+            logger.info("🔄 Returning 401 response per RFC 6749:")
+            logger.info(f"   Status: 401 Unauthorized")
+            logger.info(f"   Error Code: {error_code}")
+            logger.info(f"   Error Description: {error_description}")
+            logger.info(f"   Headers: {response_headers}")
+
             return JSONResponse(
                 status_code=401,
-                content={
-                    "error": "invalid_token",
-                    "error_description": "Token verification failed"
-                },
-                headers={
-                    "WWW-Authenticate": 'Bearer realm="MCP API", error="invalid_token", error_description="Token verification failed"'
-                }
+                content=response_content,
+                headers=response_headers
             )
 
         except Exception as e:

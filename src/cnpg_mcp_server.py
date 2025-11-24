@@ -74,8 +74,8 @@ class VerboseLogsFilter(logging.Filter):
 
 
 # Apply filters to reduce log noise
+# Note: Only filter uvicorn.access and mcp, NOT auth_oidc (we need auth details for debugging)
 logging.getLogger("uvicorn.access").addFilter(VerboseLogsFilter())
-logging.getLogger("auth_oidc").addFilter(VerboseLogsFilter())
 logging.getLogger("mcp").addFilter(VerboseLogsFilter())
 
 # ============================================================================
@@ -2180,7 +2180,7 @@ async def run_http_transport(host: str = "0.0.0.0", port: int = 4204):
                 Middleware(
                     OIDCAuthMiddleware,
                     auth_provider=auth_provider,
-                    exclude_paths=["/healthz", "/readyz", "/.well-known/"]
+                    exclude_paths=["/healthz", "/readyz", "/.well-known/", "/register"]
                 )
             )
 

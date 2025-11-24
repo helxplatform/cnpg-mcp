@@ -258,14 +258,14 @@ Examples:
 
 Secrets Created:
   1. mcp-auth0-config
-     - AUTH0_ISSUER
-     - AUTH0_AUDIENCE
-     
-  2. mcp-auth0-mgmt (Management API credentials)
+     - oidc.yaml (OIDC configuration)
+
+  2. mcp-auth0-mgmt (Management API credentials + client secrets)
      - client-id
      - client-secret
      - domain
      - connection-id
+     - client-secrets.yaml (for JWE decryption)
         """
     )
     
@@ -366,12 +366,39 @@ Secrets Created:
     config_data = {
         'oidc.yaml': oidc_yaml_content
     }
-    
+
+    # Extract client secrets for JWE decryption (Auth0 encrypted ID tokens)
+    client_secrets = []
+
+    # Add test client secret
+    if 'test_client' in auth_config and 'client_secret' in auth_config['test_client']:
+        test_secret = auth_config['test_client']['client_secret']
+        if test_secret:
+            client_secrets.append(test_secret)
+
+    # Add management API client secret
+    mgmt_secret = mgmt_api.get('client_secret', '')
+    if mgmt_secret:
+        client_secrets.append(mgmt_secret)
+
+    # Add DCR-created Claude client secret (if available)
+    if 'claude_dcr_client' in auth_config and 'client_secret' in auth_config['claude_dcr_client']:
+        claude_secret = auth_config['claude_dcr_client']['client_secret']
+        if claude_secret:
+            client_secrets.append(claude_secret)
+
+    # Create client-secrets.yaml for JWE decryption
+    client_secrets_config = {
+        'client_secrets': client_secrets
+    }
+    client_secrets_yaml_content = yaml.dump(client_secrets_config, default_flow_style=False, sort_keys=False)
+
     mgmt_data = {
         'client-id': mgmt_api.get('client_id', ''),
-        'client-secret': mgmt_api.get('client_secret', ''),
+        'client-secret': mgmt_secret,
         'domain': auth_config['domain'],
-        'connection-id': auth_config['connection_id']
+        'connection-id': auth_config['connection_id'],
+        'client-secrets.yaml': client_secrets_yaml_content  # Add client secrets file
     }
     
     print("Secrets to create:")
@@ -389,12 +416,27 @@ Secrets Created:
     
     print("2. mcp-auth0-mgmt")
     for key, value in mgmt_data.items():
-        if 'secret' in key.lower():
+        if key == 'client-secrets.yaml':
+            print(f"   - {key}:")
+            for line in value.split('\n'):
+                if line.strip():
+                    # Hide actual secret values in display
+                    if 'client_secrets:' in line:
+                        print(f"       {line}")
+                    elif line.strip().startswith('-'):
+                        print(f"       - ***hidden***")
+                    else:
+                        print(f"       {line}")
+        elif 'secret' in key.lower():
             display = "***hidden***" if value else "***empty***"
             print(f"   - {key}: {display}")
         else:
             print(f"   - {key}: {value}")
     print()
+
+    if client_secrets:
+        print(f"ℹ️  Note: Added {len(client_secrets)} client secret(s) to client-secrets.yaml for JWE decryption")
+        print()
     
     if not args.dry_run:
         proceed = input("Proceed with secret creation? (y/N): ")
@@ -438,12 +480,18 @@ Secrets Created:
         print()
         print("📋 Next Steps:")
         print()
-        print("1. Deploy your MCP server:")
-        print(f"   helm upgrade --install mcp-server ./mcp-server-chart -n {creator.namespace}")
+        print("1. Update Helm values.yaml to use the secrets:")
+        print(f"   oidc:")
+        print(f"     issuer: \"{auth_config['issuer']}\"")
+        print(f"     audience: \"{auth_config['audience']}\"")
+        print(f"     clientSecretsSecret: \"mcp-auth0-mgmt\"  # Enable JWE decryption")
         print()
-        print("2. Verify secrets:")
+        print("2. Deploy your MCP server:")
+        print(f"   helm upgrade --install cnpg-mcp ./chart -n {creator.namespace}")
+        print()
+        print("3. Verify secrets:")
         print(f"   kubectl get secrets -n {creator.namespace}")
-        print(f"   kubectl describe secret mcp-auth0-config -n {creator.namespace}")
+        print(f"   kubectl describe secret mcp-auth0-mgmt -n {creator.namespace}")
         print()
     else:
         print("❌ Some secrets failed to create")

@@ -32,7 +32,7 @@ from urllib.parse import urlparse
 from pathlib import Path
 
 
-DEFAULT_CONFIG_FILE = os.path.expanduser("~/.auth0-mcp-config.json")
+DEFAULT_CONFIG_FILE = "auth0-config.json"
 
 
 class ConfigManager:
@@ -346,12 +346,23 @@ class Auth0MCPSetup:
                 grant_payload = {
                     "client_id": client_id,
                     "audience": mgmt_api["identifier"],
-                    "scope": ["update:connections", "read:connections"]
+                    "scope": [
+                        # Connection management (for promoting username-password auth)
+                        "update:connections",
+                        "read:connections",
+                        # Client management (for converting DCR clients to public, checking config)
+                        "update:clients",
+                        "read:clients",
+                        "read:client_keys",
+                        "read:client_summary"
+                    ]
                 }
-                
+
                 try:
                     self._make_request("POST", f"/client-grants", data=grant_payload)
-                    print("✅ Granted update:connections and read:connections scopes")
+                    print("✅ Granted Management API scopes:")
+                    print("   - Connections: read, update")
+                    print("   - Clients: read, update, keys, summary")
                 except Exception:
                     print("✅ Permissions already configured")
             
@@ -676,41 +687,45 @@ def save_output_files(
     test_client_secret: str,
     user_auth_client_id: str,
     connection_id: str,
-    output_dir: str = "."
+    output_dir: str = ".",
+    save_config: bool = True
 ) -> None:
     """Save configuration files."""
     print("\n💾 Saving configuration files...")
 
-    if not mgmt_client_secret:
-        print("⚠️  Warning: Management client secret not available")
-        print("   Configuration will be incomplete")
-        print("   Run with --recreate-client to generate a new secret")
+    if save_config:
+        if not mgmt_client_secret:
+            print("⚠️  Warning: Management client secret not available")
+            print("   Configuration will be incomplete")
+            print("   Run with --recreate-client to generate a new secret")
 
-    # auth0-config.json - single source of truth
-    config = {
-        "domain": domain,
-        "issuer": f"https://{domain}",
-        "audience": api_identifier,
-        "management_api": {
-            "client_id": mgmt_client_id,
-            "client_secret": mgmt_client_secret
-        },
-        "test_client": {
-            "client_id": test_client_id,
-            "client_secret": test_client_secret
-        },
-        "user_auth_client": {
-            "client_id": user_auth_client_id
-        },
-        "connection_id": connection_id,
-        "dcr_enabled": True,
-        "connection_promoted": True
-    }
-    
-    json_file = os.path.join(output_dir, "auth0-config.json")
-    with open(json_file, "w") as f:
-        json.dump(config, f, indent=2)
-    print(f"✅ Created {json_file}")
+        # auth0-config.json - single source of truth
+        config = {
+            "domain": domain,
+            "issuer": f"https://{domain}",
+            "audience": api_identifier,
+            "management_api": {
+                "client_id": mgmt_client_id,
+                "client_secret": mgmt_client_secret
+            },
+            "test_client": {
+                "client_id": test_client_id,
+                "client_secret": test_client_secret
+            },
+            "user_auth_client": {
+                "client_id": user_auth_client_id
+            },
+            "connection_id": connection_id,
+            "dcr_enabled": True,
+            "connection_promoted": True
+        }
+
+        json_file = os.path.join(output_dir, "auth0-config.json")
+        with open(json_file, "w") as f:
+            json.dump(config, f, indent=2)
+        print(f"✅ Created {json_file}")
+    else:
+        print(f"⏭️  Skipping auth0-config.json (preserving existing secrets)")
     
     # Load make.env to get image repository and tag
     make_env = load_make_env(output_dir)
@@ -754,6 +769,10 @@ oidc:
   # API audience (this is the identifier you created in Auth0)
   audience: "{api_identifier}"
 
+  # Management API client ID for updating DCR-created clients
+  # This allows the server to convert confidential clients to public clients
+  mgmt_client_id: "{mgmt_client_id}"
+
   # Optional: Uncomment if you need to override JWKS URI
   # jwksUri: "https://{domain}/.well-known/jwks.json"
 
@@ -764,19 +783,16 @@ service:
 
 # Ingress (configure for external access)
 ingress:
-  enabled: false
+  enabled: true
   className: "nginx"
   annotations:
     cert-manager.io/cluster-issuer: "letsencrypt"
-  hosts:
-    - host: {ingress_host}
-      paths:
-        - path: /
-          pathType: Prefix
+  host: {ingress_host}
+  path: /
+  pathType: Prefix
   tls:
-    - secretName: mcp-tls
-      hosts:
-        - {ingress_host}
+    enabled: true
+    secretName: mcp-tls
 
 # Resource limits
 resources:
@@ -860,7 +876,7 @@ Examples:
         'domain': config_mgr.get_value('domain', args.domain, 'AUTH0_DOMAIN'),
         'token': config_mgr.get_value('token', args.token, 'AUTH0_MGMT_TOKEN'),
         'api_name': config_mgr.get_value('api_name', args.api_name, 'AUTH0_API_NAME', 'MCP Server API'),
-        'api_identifier': config_mgr.get_value('api_identifier', args.api_identifier, 'AUTH0_API_IDENTIFIER'),
+        'api_identifier': config_mgr.get_value('api_identifier', args.api_identifier, 'AUTH0_API_IDENTIFIER') or config_mgr.config.get('audience'),
         'connection_id': config_mgr.get_value('connection_id', args.connection_id, 'AUTH0_CONNECTION_ID'),
         'client_secret': config_mgr.get_value('client_secret', None, 'AUTH0_MGMT_CLIENT_SECRET')
     }
@@ -887,9 +903,53 @@ Examples:
         else:
             missing.append("api-identifier")
     
+    # Special mode: if we have all needed data in config file, allow regenerating values file only
+    # Only requires domain and mgmt_client_id - api_identifier can be generated from domain
+    # Support both old format (management_api.client_id) and new format (mgmt_client_id)
+    saved_mgmt_client_id = (
+        config_mgr.config.get('mgmt_client_id') or
+        (config_mgr.config.get('management_api', {}).get('client_id') if isinstance(config_mgr.config.get('management_api'), dict) else None)
+    )
+
+    has_saved_config = all([
+        config_mgr.config.get('domain'),
+        saved_mgmt_client_id
+    ])
+
+    # Debug: Show what we have in saved config for regeneration
+    if not config['token']:
+        print(f"\n🔍 Checking saved config for regeneration:")
+        print(f"  domain: {config_mgr.config.get('domain')}")
+        print(f"  mgmt_client_id: {saved_mgmt_client_id}")
+        print(f"  has_saved_config: {has_saved_config}")
+
     if missing:
-        print(f"\n❌ Missing required values: {', '.join(missing)}")
-        sys.exit(1)
+        if has_saved_config and not config['token']:
+            print(f"\n💡 Regenerating values file from saved config (no Auth0 query needed)")
+            # We have enough to regenerate values file
+            config['domain'] = config_mgr.config['domain']
+            # Use saved api_identifier or generate default from domain
+            config['api_identifier'] = config_mgr.config.get('api_identifier') or config_mgr.config.get('audience') or f"https://{config['domain']}/mcp"
+            mgmt_client_id = saved_mgmt_client_id
+
+            # Generate values file only (don't overwrite config with empty secrets)
+            save_output_files(
+                domain=config['domain'],
+                api_identifier=config['api_identifier'],
+                mgmt_client_id=mgmt_client_id,
+                mgmt_client_secret="",  # Not available without token
+                test_client_id=config_mgr.config.get('test_client', {}).get('client_id', ''),
+                test_client_secret="",  # Not available without token
+                user_auth_client_id=config_mgr.config.get('user_auth_client', {}).get('client_id', ''),
+                connection_id=config_mgr.config.get('connection_id', ''),
+                output_dir=args.output_dir,
+                save_config=False  # Don't overwrite config file - preserve existing secrets
+            )
+            print(f"\n✅ Values file regenerated from config")
+            sys.exit(0)
+        else:
+            print(f"\n❌ Missing required values: {', '.join(missing)}")
+            sys.exit(1)
     
     print("\n" + "=" * 70)
     print("Configuration Summary")
