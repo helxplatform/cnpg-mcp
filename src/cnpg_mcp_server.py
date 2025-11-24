@@ -95,7 +95,9 @@ TRANSPORT_MODE = "stdio"  # or "http"
 # Server Initialization
 # ============================================================================
 
-# Initialize FastMCP server
+# Initialize FastMCP server (auth will be configured at runtime based on transport)
+# For stdio: No auth needed (local communication)
+# For HTTP: OAuth Proxy will be configured in run_http_transport()
 mcp = FastMCP("cloudnative-pg")
 
 # Kubernetes clients (initialized lazily)
@@ -2139,125 +2141,155 @@ async def run_stdio_transport():
 
 async def run_http_transport(host: str = "0.0.0.0", port: int = 4204):
     """
-    Run the MCP server using HTTP transport (Streamable HTTP) with OIDC authentication.
+    Run the MCP server using HTTP transport with FastMCP OAuth Proxy for Auth0.
 
-    This mode allows multiple clients to connect remotely and is suitable
-    for team environments and production deployments. The MCP endpoint is
-    available at /mcp.
+    This mode uses FastMCP's built-in OAuth Proxy which properly handles token issuance:
+    1. Receives authorization codes from Auth0
+    2. Exchanges them for Auth0 tokens (internally, may be JWE encrypted)
+    3. Issues MCP-signed JWT tokens to clients (NOT Auth0 tokens)
+    4. Validates client tokens and manages Auth0 session binding
 
-    OIDC authentication is enforced via environment variables:
-        OIDC_ISSUER: OIDC provider URL (required)
-        OIDC_AUDIENCE: Expected JWT audience (required)
-        OIDC_JWKS_URI: Optional JWKS URI override
-        DCR_PROXY_URL: Optional DCR proxy for client registration
-        OIDC_SCOPE: Required scope (default: openid)
+    This solves the JWE token problem: clients receive signed JWT tokens from the MCP
+    server, not encrypted JWE tokens from Auth0.
+
+    Configuration is loaded from (priority order):
+    1. Config file at /etc/mcp/oidc.yaml (recommended for Kubernetes)
+    2. Environment variables:
+       - OIDC_ISSUER: Auth0 domain (e.g., https://your-domain.auth0.com)
+       - OIDC_AUDIENCE: API identifier (e.g., https://your-api.example.com/mcp)
+       - AUTH0_CLIENT_ID: Auth0 application client ID
+       - AUTH0_CLIENT_SECRET: Auth0 application client secret
+       - PUBLIC_URL: Public URL of this server (e.g., https://mcp.example.com)
+
+    Args:
+        host: Host to bind to (default: 0.0.0.0)
+        port: Port to bind to (default: 4204)
     """
     logger.info(f"Starting CloudNativePG MCP server with HTTP transport on {host}:{port}...")
-    logger.info("FastMCP server initialized with name: cloudnative-pg")
-    logger.info(f"MCP endpoint available at: http://{host}:{port}/mcp")
-
-    # Initialize OIDC authentication if configured
-    auth_provider = None
-    middleware = []
+    logger.info("Using FastMCP OAuth Proxy for Auth0 authentication")
 
     # Check if OIDC should be enabled (config file or env var)
     import os
     from pathlib import Path
     oidc_config_exists = Path("/etc/mcp/oidc.yaml").exists() or os.getenv("OIDC_ISSUER")
 
-    if oidc_config_exists:
-        try:
-            from auth_oidc import OIDCAuthProvider, OIDCAuthMiddleware
-            from starlette.middleware import Middleware
-
-            logger.info("Initializing OIDC authentication...")
-            # OIDCAuthProvider will check config file first, then env vars
-            auth_provider = OIDCAuthProvider()
-
-            # Create middleware using Starlette's Middleware wrapper
-            # This is the format Starlette expects when building middleware stack
-            middleware.append(
-                Middleware(
-                    OIDCAuthMiddleware,
-                    auth_provider=auth_provider,
-                    exclude_paths=["/healthz", "/readyz", "/.well-known/", "/register"]
-                )
-            )
-
-            logger.info("✓ OIDC authentication enabled")
-            logger.info(f"  Issuer: {auth_provider.issuer}")
-            logger.info(f"  Audience: {auth_provider.audience}")
-
-        except Exception as e:
-            logger.error(f"Failed to initialize OIDC authentication: {e}")
-            logger.error("Server will NOT start without valid OIDC configuration.")
-            raise
-    else:
+    if not oidc_config_exists:
+        logger.warning("=" * 80)
         logger.warning("OIDC authentication NOT configured!")
         logger.warning("Provide OIDC config via:")
         logger.warning("  1. Config file at /etc/mcp/oidc.yaml (recommended for Kubernetes)")
-        logger.warning("  2. Environment variables: OIDC_ISSUER and OIDC_AUDIENCE")
+        logger.warning("  2. Environment variables: OIDC_ISSUER, OIDC_AUDIENCE, etc.")
         logger.warning("Running in INSECURE mode (development only).")
+        logger.warning("=" * 80)
 
-    # Get Starlette app without middleware
-    # Use "http" transport (Streamable HTTP) with /mcp endpoint
-    # This is the recommended transport for production deployments
-    app = mcp.http_app(
-        transport="http",
-        path="/mcp"
-    )
+        # Run without auth (INSECURE - development only)
+        logger.info(f"MCP endpoint available at: http://{host}:{port}/mcp")
+        await mcp.run(transport="http", host=host, port=port)
+        return
 
-    # Add health check endpoints (unauthenticated) - must be added before wrapping with auth
-    from starlette.responses import JSONResponse
-    from starlette.routing import Route
+    try:
+        # Import FastMCP OAuth Proxy configuration module
+        from auth_fastmcp import create_auth0_oauth_proxy, get_auth_config_summary, load_oidc_config_from_file
 
-    async def liveness_check(request):
-        """Liveness probe - checks if server is running."""
-        return JSONResponse({"status": "alive", "service": "cnpg-mcp-server"})
+        logger.info("Initializing FastMCP OAuth Proxy for Auth0...")
 
-    async def readiness_check(request):
-        """Readiness probe - checks if server is ready to accept requests."""
-        # TODO: Add checks for Kubernetes API connectivity if needed
-        return JSONResponse({"status": "ready", "service": "cnpg-mcp-server"})
+        # Load config to get values for logging
+        config = load_oidc_config_from_file() or {}
+        issuer = (config.get("issuer") or os.getenv("OIDC_ISSUER") or "").rstrip('/')
+        audience = config.get("audience") or os.getenv("OIDC_AUDIENCE") or ""
+        client_id = config.get("client_id") or os.getenv("AUTH0_CLIENT_ID") or ""
+        public_url = config.get("public_url") or os.getenv("PUBLIC_URL") or ""
 
-    app.routes.insert(0, Route("/healthz", liveness_check, methods=["GET"]))
-    app.routes.insert(0, Route("/readyz", readiness_check, methods=["GET"]))
+        # Create OAuth Proxy (handles token issuance)
+        auth_proxy = create_auth0_oauth_proxy()
 
-    # Add OAuth metadata routes if auth provider is configured
-    if auth_provider:
-        metadata_routes = auth_provider.get_metadata_routes()
-        for route in metadata_routes:
-            app.routes.append(route)
+        # Log configuration summary
+        config_summary = get_auth_config_summary(issuer, audience, client_id, public_url)
+        logger.info("✅ OAuth Proxy configured:")
+        logger.info(f"   Provider: {config_summary['provider']}")
+        logger.info(f"   Issuer: {config_summary['issuer']}")
+        logger.info(f"   Audience: {config_summary['audience']}")
+        logger.info(f"   Client ID: {config_summary['client_id']}")
+        logger.info(f"   Authorization: {config_summary['authorization_endpoint']}")
+        logger.info(f"   Token Exchange: {config_summary['token_endpoint']}")
+        logger.info(f"   Public URL: {config_summary['public_url']}")
+        logger.info(f"   Callback Path: {config_summary['redirect_path']}")
+        logger.info(f"   PKCE Enabled: {config_summary['pkce_enabled']}")
+        logger.info(f"   User Consent: {config_summary['consent_required']}")
 
-    # Wrap the app with OIDC middleware if configured
-    # This must be done AFTER adding all routes
-    if middleware:
-        from starlette.middleware import Middleware
-        from starlette.applications import Starlette
+        logger.info("=" * 80)
+        logger.info("🚀 FastMCP OAuth Proxy Authentication Enabled")
+        logger.info("=" * 80)
+        logger.info("Token Flow:")
+        logger.info("  1. Client initiates OAuth flow with MCP server")
+        logger.info("  2. MCP server redirects to Auth0 for authentication")
+        logger.info("  3. Auth0 redirects back with authorization code")
+        logger.info("  4. MCP server exchanges code for Auth0 token (internal)")
+        logger.info("  5. MCP server issues its own JWT token to client")
+        logger.info("  6. Client uses MCP token for subsequent requests")
+        logger.info("=" * 80)
+        logger.info(f"MCP Endpoint: http://{host}:{port}/mcp")
+        logger.info(f"OAuth Metadata: http://{host}:{port}/.well-known/oauth-authorization-server")
+        logger.info(f"DCR Endpoint: http://{host}:{port}/register")
+        logger.info(f"Health Check: http://{host}:{port}/healthz")
+        logger.info("=" * 80)
 
-        # Extract the OIDC middleware config
-        oidc_middleware_config = middleware[0]
+        # Set auth on the mcp instance before getting the HTTP app
+        # This configures FastMCP to use OAuth Proxy for authentication
+        mcp.auth = auth_proxy
 
-        # Apply middleware by wrapping the app
-        app.add_middleware(
-            oidc_middleware_config.cls,
-            **oidc_middleware_config.kwargs
+        # Get ASGI app with FastMCP's built-in HTTP transport
+        # FastMCP will handle:
+        # - OAuth endpoints (/authorize, /token, /register)
+        # - OAuth metadata (/.well-known/oauth-authorization-server)
+        # - Token verification middleware
+        # - MCP endpoint (/mcp)
+        app = mcp.http_app(transport="http", path="/mcp")
+
+        # Add health check endpoints (unauthenticated)
+        from starlette.responses import JSONResponse
+        from starlette.routing import Route
+
+        async def liveness_check(request):
+            """Liveness probe - checks if server is running."""
+            return JSONResponse({"status": "alive", "service": "cnpg-mcp-server"})
+
+        async def readiness_check(request):
+            """Readiness probe - checks if server is ready to accept requests."""
+            return JSONResponse({"status": "ready", "service": "cnpg-mcp-server"})
+
+        app.routes.insert(0, Route("/healthz", liveness_check, methods=["GET"]))
+        app.routes.insert(0, Route("/readyz", readiness_check, methods=["GET"]))
+
+        # Run with uvicorn
+        import uvicorn
+
+        config = uvicorn.Config(
+            app,
+            host=host,
+            port=port,
+            log_level="info",
+            access_log=True,
+            server_header=False,
         )
 
-    # Run with uvicorn
-    import uvicorn
+        server = uvicorn.Server(config)
+        await server.serve()
 
-    config = uvicorn.Config(
-        app,
-        host=host,
-        port=port,
-        log_level="info",
-        access_log=True,
-        server_header=False,
-    )
-
-    server = uvicorn.Server(config)
-    await server.serve()
+    except Exception as e:
+        logger.error("=" * 80)
+        logger.error("❌ Failed to initialize OAuth authentication")
+        logger.error("=" * 80)
+        logger.error(f"Error: {e}")
+        logger.error("")
+        logger.error("Common issues:")
+        logger.error("  1. Missing required configuration (issuer, audience, client_id, etc.)")
+        logger.error("  2. Invalid client secret or file path")
+        logger.error("  3. Incorrect Auth0 domain or API identifier")
+        logger.error("")
+        logger.error("Please check your configuration file or environment variables.")
+        logger.error("=" * 80)
+        raise
 
 
 # ============================================================================
