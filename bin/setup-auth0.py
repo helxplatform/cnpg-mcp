@@ -347,6 +347,12 @@ class Auth0MCPSetup:
                     "client_id": client_id,
                     "audience": mgmt_api["identifier"],
                     "scope": [
+                        # Tenant settings (for DCR enable/check)
+                        "read:tenant_settings",
+                        "update:tenant_settings",
+                        # Resource servers / APIs (for creating/reading MCP API)
+                        "read:resource_servers",
+                        "create:resource_servers",
                         # Connection management (for promoting username-password auth)
                         "update:connections",
                         "read:connections",
@@ -361,6 +367,8 @@ class Auth0MCPSetup:
                 try:
                     self._make_request("POST", f"/client-grants", data=grant_payload)
                     print("✅ Granted Management API scopes:")
+                    print("   - Tenant settings: read, update")
+                    print("   - Resource servers (APIs): read, create")
                     print("   - Connections: read, update")
                     print("   - Clients: read, update, keys, summary")
                 except Exception:
@@ -491,6 +499,12 @@ class Auth0MCPSetup:
         """
         print(f"\n👤 Setting up User Authentication Client: {name}...")
 
+        # Extract base URL from api_identifier for MCP server callbacks
+        # e.g., "https://cnpg-claude.wat.im/mcp" -> "https://cnpg-claude.wat.im"
+        from urllib.parse import urlparse
+        parsed = urlparse(api_identifier)
+        mcp_base_url = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else None
+
         # Check if client exists
         all_clients = self._make_request("GET", "/clients")
         existing = next((c for c in all_clients if c.get("name") == name), None)
@@ -507,9 +521,95 @@ class Auth0MCPSetup:
             client_id = existing['client_id']
             print(f"✅ User auth client already exists")
             print(f"   Client ID: {client_id}")
+
+            # Check and update callback URLs if missing
+            existing_callbacks = existing.get('callbacks', [])
+            missing_callbacks = []
+
+            # Check for MCP server callback
+            # FastMCP uses /auth/callback as the redirect path (see src/auth_fastmcp.py:214)
+            if mcp_base_url:
+                mcp_callback = f"{mcp_base_url}/auth/callback"
+                if mcp_callback not in existing_callbacks:
+                    missing_callbacks.append(mcp_callback)
+
+            # Check for Claude callback
+            claude_callback = "https://claude.ai/api/mcp/auth_callback"
+            if claude_callback not in existing_callbacks:
+                missing_callbacks.append(claude_callback)
+
+            if missing_callbacks:
+                print(f"   ⚠️  Missing callback URLs, updating client...")
+                updated_callbacks = existing_callbacks + missing_callbacks
+
+                # Also update web_origins and allowed_origins
+                existing_web_origins = existing.get('web_origins', [])
+                existing_allowed_origins = existing.get('allowed_origins', [])
+
+                updated_web_origins = existing_web_origins.copy()
+                updated_allowed_origins = existing_allowed_origins.copy()
+
+                if mcp_base_url and mcp_base_url not in updated_web_origins:
+                    updated_web_origins.append(mcp_base_url)
+                    updated_allowed_origins.append(mcp_base_url)
+
+                if "https://claude.ai" not in updated_web_origins:
+                    updated_web_origins.append("https://claude.ai")
+                    updated_allowed_origins.append("https://claude.ai")
+
+                try:
+                    self._make_request(
+                        "PATCH",
+                        f"/clients/{client_id}",
+                        data={
+                            "callbacks": updated_callbacks,
+                            "web_origins": updated_web_origins,
+                            "allowed_origins": updated_allowed_origins
+                        }
+                    )
+                    print(f"   ✅ Updated callback URLs:")
+                    for cb in missing_callbacks:
+                        print(f"      + {cb}")
+                except Exception as e:
+                    print(f"   ⚠️  Failed to update callbacks: {e}")
+            else:
+                print(f"   ✅ All required callback URLs already configured")
         else:
             # Create new SPA client for user authentication
             try:
+                # Build callback URLs list
+                callbacks = [
+                    "http://localhost:8888/callback",  # For test/get-user-token.py
+                    "http://localhost:8889/callback",  # Alternate port
+                    "http://127.0.0.1:8888/callback",  # IPv4 explicit
+                ]
+
+                web_origins = [
+                    "http://localhost:8888",
+                    "http://localhost:8889",
+                ]
+
+                allowed_origins = [
+                    "http://localhost:8888",
+                    "http://localhost:8889",
+                ]
+
+                # Add MCP server callback URL for FastMCP OIDC proxy
+                # FastMCP uses /auth/callback as the redirect path (see src/auth_fastmcp.py:214)
+                if mcp_base_url:
+                    mcp_callback = f"{mcp_base_url}/auth/callback"
+                    callbacks.append(mcp_callback)
+                    web_origins.append(mcp_base_url)
+                    allowed_origins.append(mcp_base_url)
+                    print(f"   Adding MCP server callback: {mcp_callback}")
+
+                # Add Claude Desktop callback URL for third-party auth flow
+                claude_callback = "https://claude.ai/api/mcp/auth_callback"
+                callbacks.append(claude_callback)
+                web_origins.append("https://claude.ai")
+                allowed_origins.append("https://claude.ai")
+                print(f"   Adding Claude callback: {claude_callback}")
+
                 payload = {
                     "name": name,
                     "description": f"User authentication client for {api_identifier} (Claude Desktop compatible)",
@@ -519,19 +619,9 @@ class Auth0MCPSetup:
                         "refresh_token"        # For staying logged in
                     ],
                     "token_endpoint_auth_method": "none",  # PKCE instead of client secret
-                    "callbacks": [
-                        "http://localhost:8888/callback",  # For test/get-user-token.py
-                        "http://localhost:8889/callback",  # Alternate port
-                        "http://127.0.0.1:8888/callback",  # IPv4 explicit
-                    ],
-                    "web_origins": [
-                        "http://localhost:8888",
-                        "http://localhost:8889",
-                    ],
-                    "allowed_origins": [
-                        "http://localhost:8888",
-                        "http://localhost:8889",
-                    ],
+                    "callbacks": callbacks,
+                    "web_origins": web_origins,
+                    "allowed_origins": allowed_origins,
                     "oidc_conformant": True,  # Use modern OIDC flow
                 }
 
@@ -837,6 +927,36 @@ securityContext:
     print(f"   Ready to deploy: helm install mcp-server ./chart -f {helm_file}")
 
 
+def get_management_token(domain: str, client_id: str, client_secret: str) -> Optional[str]:
+    """
+    Get a management API token using client credentials.
+
+    Args:
+        domain: Auth0 domain
+        client_id: Management client ID
+        client_secret: Management client secret
+
+    Returns:
+        Access token or None if failed
+    """
+    try:
+        response = requests.post(
+            f'https://{domain}/oauth/token',
+            json={
+                'grant_type': 'client_credentials',
+                'client_id': client_id,
+                'client_secret': client_secret,
+                'audience': f'https://{domain}/api/v2/'
+            },
+            timeout=30
+        )
+        response.raise_for_status()
+        return response.json()['access_token']
+    except Exception as e:
+        print(f"⚠️  Could not get management token: {e}")
+        return None
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -853,17 +973,17 @@ Examples:
     --api-identifier https://mcp-server.example.com/mcp \\
     --token YOUR_TOKEN
 
-  # Subsequent runs
-  python setup_auth0_for_mcp.py --token YOUR_TOKEN
-  
+  # Subsequent runs (automatically gets token from saved credentials)
+  python setup_auth0_for_mcp.py
+
   # Force recreate management client
-  python setup_auth0_for_mcp.py --token YOUR_TOKEN --recreate-client
+  python setup_auth0_for_mcp.py --recreate-client
         """
     )
-    
+
     parser.add_argument("--config-file", default=DEFAULT_CONFIG_FILE)
     parser.add_argument("--domain", help="Auth0 tenant domain")
-    parser.add_argument("--token", help="Management API access token")
+    parser.add_argument("--token", help="Management API access token (auto-generated if not provided)")
     parser.add_argument("--api-name", help="Name for the MCP API")
     parser.add_argument("--api-identifier", help="API identifier/audience")
     parser.add_argument("--output-dir", default=".", help="Output directory")
@@ -872,7 +992,9 @@ Examples:
                        help="Force recreate management client")
     parser.add_argument("--save-config", action="store_true", default=True)
     parser.add_argument("--no-save-config", action="store_false", dest="save_config")
-    
+    parser.add_argument("--yes", "-y", action="store_true",
+                       help="Skip confirmation prompt")
+
     args = parser.parse_args()
     
     print("=" * 70)
@@ -891,7 +1013,7 @@ Examples:
     }
     
     config_mgr.show_sources(config)
-    
+
     missing = []
     if not config['domain']:
         missing.append("domain")
@@ -901,9 +1023,30 @@ Examples:
         except ValueError as e:
             print(f"\n❌ {e}")
             sys.exit(1)
-    
+
+    # Try to get management token automatically if not provided
     if not config['token']:
-        missing.append("token")
+        # Check if we have saved management client credentials
+        saved_mgmt_client_id = (
+            config_mgr.config.get('mgmt_client_id') or
+            (config_mgr.config.get('management_api', {}).get('client_id') if isinstance(config_mgr.config.get('management_api'), dict) else None)
+        )
+        saved_mgmt_client_secret = (
+            config_mgr.config.get('client_secret') or
+            (config_mgr.config.get('management_api', {}).get('client_secret') if isinstance(config_mgr.config.get('management_api'), dict) else None)
+        )
+
+        if saved_mgmt_client_id and saved_mgmt_client_secret and config['domain']:
+            print(f"\n🔑 No token provided, getting management token from saved credentials...")
+            token = get_management_token(config['domain'], saved_mgmt_client_id, saved_mgmt_client_secret)
+            if token:
+                config['token'] = token
+                print(f"✅ Successfully obtained management token")
+            else:
+                print(f"⚠️  Could not get management token automatically")
+
+        if not config['token']:
+            missing.append("token")
     
     if not config['api_identifier']:
         if config['domain']:
@@ -973,32 +1116,54 @@ Examples:
     print(f"Connection ID:    {config.get('connection_id') or 'Will select'}")
     print(f"Recreate Client:  {args.recreate_client}")
     print()
-    
-    proceed = input("Proceed with setup? (y/N): ")
-    if proceed.lower() != 'y':
-        print("Aborted.")
-        sys.exit(0)
+
+    if not args.yes:
+        proceed = input("Proceed with setup? (y/N): ")
+        if proceed.lower() != 'y':
+            print("Aborted.")
+            sys.exit(0)
+    else:
+        print("Auto-proceeding (--yes flag provided)")
+        print()
     
     try:
         setup = Auth0MCPSetup(config['domain'], config['token'])
-        
-        if not setup.enable_dcr():
-            sys.exit(1)
-        
-        api = setup.create_api(config['api_name'], config['api_identifier'])
+
+        # Try to enable DCR, but don't fail if we lack permissions (may already be enabled)
+        try:
+            setup.enable_dcr()
+        except Exception as e:
+            print(f"⚠️  Could not verify/enable DCR (may already be configured): {e}")
+            print(f"   Continuing with client setup...")
+
+        # Try to create/verify API, but don't fail if we lack permissions (may already exist)
+        try:
+            api = setup.create_api(config['api_name'], config['api_identifier'])
+        except Exception as e:
+            print(f"⚠️  Could not verify/create API (may already exist): {e}")
+            print(f"   Continuing with client setup...")
+            api = None
         
         client, client_id, client_secret = setup.create_management_api_client(
             existing_secret=config.get('client_secret'),
             recreate=args.recreate_client
         )
 
-        # Create test M2M client for API access
+        # Create test M2M client for API access (optional - skip if we lack permissions)
         test_client_config = config.get('test_client', {})
-        test_client, test_client_id, test_client_secret = setup.create_test_api_client(
-            api_identifier=config['api_identifier'],
-            existing_secret=test_client_config.get('client_secret'),
-            recreate=args.recreate_client
-        )
+        try:
+            test_client, test_client_id, test_client_secret = setup.create_test_api_client(
+                api_identifier=config['api_identifier'],
+                existing_secret=test_client_config.get('client_secret'),
+                recreate=args.recreate_client
+            )
+        except Exception as e:
+            print(f"⚠️  Could not verify/create test client (may already exist): {e}")
+            print(f"   Continuing with user auth client setup...")
+            # Use existing test client from config if available
+            test_client_id = test_client_config.get('client_id', '')
+            test_client_secret = test_client_config.get('client_secret', '')
+            test_client = None
 
         connection_id = config.get('connection_id')
         
@@ -1023,8 +1188,11 @@ Examples:
                 except ValueError:
                     print("❌ Please enter a number")
         
-        if not setup.promote_connection(connection_id):
-            print("⚠️  Warning: Connection promotion failed, but continuing...")
+        try:
+            setup.promote_connection(connection_id)
+        except Exception as e:
+            print(f"⚠️  Warning: Connection promotion failed (may already be configured): {e}")
+            print(f"   Continuing with client setup...")
 
         # Create user auth client for Authorization Code Flow + PKCE
         # Must be done AFTER connection is promoted
