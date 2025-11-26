@@ -256,16 +256,14 @@ Examples:
   # Specify config file location
   python create_k8s_secrets.py --config-file ./config/auth0-config.json
 
-Secrets Created:
-  1. mcp-auth0-config
-     - AUTH0_ISSUER
-     - AUTH0_AUDIENCE
-     
-  2. mcp-auth0-mgmt (Management API credentials)
-     - client-id
-     - client-secret
-     - domain
-     - connection-id
+Secret Created:
+  <release-name>-auth0-credentials
+     - oauth-client-id: OAuth client ID (for FastMCP)
+     - oauth-client-secret: OAuth client secret (for FastMCP)
+     - mgmt-client-id: Management API client ID (for scripts)
+     - mgmt-client-secret: Management API client secret (for scripts)
+     - auth0-domain: Auth0 domain
+     - connection-id: Auth0 connection ID
         """
     )
     
@@ -294,7 +292,12 @@ Secrets Created:
         help="Create namespace if it doesn't exist",
         default=True
     )
-    
+    parser.add_argument(
+        "--release-name",
+        help="Helm release name (used to generate secret name)",
+        required=True
+    )
+
     args = parser.parse_args()
     
     print("=" * 70)
@@ -342,58 +345,52 @@ Secrets Created:
     print(f"Replace:          {args.replace}")
     print()
     
-    # Prepare secret data as YAML config file (not env vars)
+    # Prepare secret data
     try:
         import yaml
     except ImportError:
         print("❌ PyYAML not installed. Install with: pip install pyyaml")
         sys.exit(1)
 
-    # Create YAML config file content
-    oidc_config = {
-        'issuer': auth_config['issuer'],
-        'audience': auth_config['audience']
-    }
+    # Extract test client credentials (used for OAuth flow)
+    test_client = auth_config.get('test_client', {})
+    test_client_id = test_client.get('client_id', '')
+    test_client_secret = test_client.get('client_secret', '')
 
-    # Add optional DCR proxy if present
-    if auth_config.get('dcr_enabled'):
-        # Note: DCR proxy URL would need to be in auth0-config.json
-        # For now, this is a placeholder for future enhancement
-        pass
+    # Extract management API credentials (used for setup scripts)
+    mgmt_secret = mgmt_api.get('client_secret', '')
+    mgmt_client_id = mgmt_api.get('client_id', '')
 
-    oidc_yaml_content = yaml.dump(oidc_config, default_flow_style=False, sort_keys=False)
-
-    config_data = {
-        'oidc.yaml': oidc_yaml_content
-    }
-    
+    # Create organized secret with clear, descriptive keys
+    # Use key-value pairs for better organization
     mgmt_data = {
-        'client-id': mgmt_api.get('client_id', ''),
-        'client-secret': mgmt_api.get('client_secret', ''),
-        'domain': auth_config['domain'],
-        'connection-id': auth_config['connection_id']
+        # OAuth credentials (for FastMCP Auth0Provider)
+        'oauth-client-id': test_client_id,
+        'oauth-client-secret': test_client_secret,
+
+        # Management API credentials (for setup scripts)
+        'mgmt-client-id': mgmt_client_id,
+        'mgmt-client-secret': mgmt_secret,
+
+        # Common Auth0 configuration
+        'auth0-domain': auth_config['domain'],
+        'connection-id': auth_config['connection_id'],
     }
     
-    print("Secrets to create:")
+    print("Secret to create:")
     print()
-    print("1. mcp-auth0-config (OIDC configuration as YAML file)")
-    for key, value in config_data.items():
-        if key == 'oidc.yaml':
-            print(f"   - {key}:")
-            for line in value.split('\n'):
-                if line.strip():
-                    print(f"       {line}")
-        else:
-            print(f"   - {key}: {value}")
+    print(f"{args.release_name}-auth0-credentials (Organized credentials)")
+    print("   OAuth Credentials (for FastMCP server):")
+    print(f"     - oauth-client-id: {mgmt_data.get('oauth-client-id', 'N/A')}")
+    print(f"     - oauth-client-secret: {'***hidden***' if mgmt_data.get('oauth-client-secret') else '***empty***'}")
     print()
-    
-    print("2. mcp-auth0-mgmt")
-    for key, value in mgmt_data.items():
-        if 'secret' in key.lower():
-            display = "***hidden***" if value else "***empty***"
-            print(f"   - {key}: {display}")
-        else:
-            print(f"   - {key}: {value}")
+    print("   Management API Credentials (for setup scripts):")
+    print(f"     - mgmt-client-id: {mgmt_data.get('mgmt-client-id', 'N/A')}")
+    print(f"     - mgmt-client-secret: {'***hidden***' if mgmt_data.get('mgmt-client-secret') else '***empty***'}")
+    print()
+    print("   Common Configuration:")
+    print(f"     - auth0-domain: {mgmt_data.get('auth0-domain', 'N/A')}")
+    print(f"     - connection-id: {mgmt_data.get('connection-id', 'N/A')}")
     print()
     
     if not args.dry_run:
@@ -410,21 +407,15 @@ Secrets Created:
         print()
     
     success = True
-    
-    # Create secrets
+
+    # Generate secret name from release name
+    secret_name = f"{args.release_name}-auth0-credentials"
+
+    # Create single secret with all credentials
     if not creator.create_secret(
-        name="mcp-auth0-config",
-        data=config_data,
-        labels={"component": "auth0-config"},
-        replace=args.replace
-    ):
-        success = False
-    print()
-    
-    if not creator.create_secret(
-        name="mcp-auth0-mgmt",
+        name=secret_name,
         data=mgmt_data,
-        labels={"component": "auth0-management"},
+        labels={"component": "auth0-credentials"},
         replace=args.replace
     ):
         success = False
@@ -438,12 +429,14 @@ Secrets Created:
         print()
         print("📋 Next Steps:")
         print()
-        print("1. Deploy your MCP server:")
-        print(f"   helm upgrade --install mcp-server ./mcp-server-chart -n {creator.namespace}")
+        print("1. Secret created:")
+        print(f"   {secret_name}")
         print()
-        print("2. Verify secrets:")
-        print(f"   kubectl get secrets -n {creator.namespace}")
-        print(f"   kubectl describe secret mcp-auth0-config -n {creator.namespace}")
+        print("2. Deploy your MCP server:")
+        print(f"   helm upgrade --install {args.release_name} ./chart -n {creator.namespace} -f auth0-values.yaml")
+        print()
+        print("3. Verify secret:")
+        print(f"   kubectl describe secret {secret_name} -n {creator.namespace}")
         print()
     else:
         print("❌ Some secrets failed to create")

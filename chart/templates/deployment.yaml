@@ -44,15 +44,14 @@ spec:
 
           # Mount OIDC configuration as volume
           volumeMounts:
-            {{- if .Values.oidc.existingSecret }}
+            # Always mount ConfigMap for OIDC config
             - name: oidc-config
               mountPath: /etc/mcp
               readOnly: true
-            {{- else }}
-            - name: oidc-config
-              mountPath: /etc/mcp
+            # Mount Auth0 credentials secret
+            - name: auth0-credentials
+              mountPath: /etc/mcp/secrets
               readOnly: true
-            {{- end }}
 
           livenessProbe:
             httpGet:
@@ -79,21 +78,20 @@ spec:
 
       # Define volumes for OIDC configuration
       volumes:
-        {{- if .Values.oidc.existingSecret }}
-        - name: oidc-config
-          secret:
-            secretName: {{ .Values.oidc.existingSecret.name }}
-            items:
-              - key: {{ .Values.oidc.existingSecret.configKey | default "oidc.yaml" }}
-                path: oidc.yaml
-        {{- else }}
+        # Always use ConfigMap for OIDC config (non-sensitive)
         - name: oidc-config
           configMap:
             name: {{ include "cnpg-mcp.fullname" . }}-oidc-config
             items:
               - key: oidc.yaml
                 path: oidc.yaml
-        {{- end }}
+        # Mount Auth0 credentials secret (derived from release name)
+        - name: auth0-credentials
+          secret:
+            secretName: {{ .Release.Name }}-auth0-credentials
+            items:
+              - key: oauth-client-secret
+                path: oauth-client-secret
 
       {{- with .Values.nodeSelector }}
       nodeSelector:
