@@ -108,15 +108,16 @@ oidc:
   # OPTIONAL: Required OAuth2 scope (default: openid)
   # scope: "openid"
 
-  # OPTIONAL: Kubernetes Secret containing client secrets for JWE decryption
-  # Required for Auth0 and other IdPs that encrypt ID tokens
-  # The secret should contain a client-secrets.yaml file with the client_secrets array
-  #
-  # Example:
-  #   clientSecretsSecret: "mcp-auth0-mgmt"
+  # NOTE: Auth0 credentials secret is automatically derived from release name
+  # Secret name will be: {{ .Release.Name }}-auth0-credentials
   #
   # Create the secret using:
-  #   python bin/create_secrets.py --namespace <namespace>
+  #   python bin/create_secrets.py --namespace <namespace> --release-name <release-name>
   #
-  # The ConfigMap (oidc.yaml) will reference this secret via client_secrets_file
-  clientSecretsSecret: "mcp-auth0-mgmt"  # Set to secret name to enable JWE decryption
+  # The secret must contain:
+  #   - oauth-client-id: Auth0 OAuth client ID
+  #   - oauth-client-secret: Auth0 OAuth client secret
+  #   - mgmt-client-id: Management API client ID (for scripts)
+  #   - mgmt-client-secret: Management API client secret (for scripts)
+  #   - auth0-domain: Auth0 domain
+  #   - connection-id: Auth0 connection ID

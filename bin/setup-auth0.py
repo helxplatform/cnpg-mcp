@@ -422,7 +422,8 @@ class Auth0MCPSetup:
                     "description": f"Test M2M client for accessing {api_identifier}",
                     "app_type": "non_interactive",
                     "grant_types": ["client_credentials"],
-                    "token_endpoint_auth_method": "client_secret_post"
+                    "token_endpoint_auth_method": "client_secret_basic",
+                    "oidc_conformant": True
                 }
 
                 client = self._make_request("POST", "/clients", data=payload)
@@ -438,42 +439,46 @@ class Auth0MCPSetup:
                 print(f"❌ Failed to create test M2M client: {e}")
                 raise
 
-        # Grant access to the MCP API
+        # Grant access to the MCP API (non-fatal if permissions insufficient)
         print(f"🔑 Granting access to API: {api_identifier}...")
-
-        # Get API resource server
-        resource_servers = self._make_request("GET", "/resource-servers")
-        api = next((rs for rs in resource_servers if rs.get("identifier") == api_identifier), None)
-
-        if not api:
-            print(f"❌ API not found: {api_identifier}")
-            raise ValueError(f"API {api_identifier} not found")
-
-        api_id = api["id"]
-
-        # Get API scopes
-        scopes = [scope["value"] for scope in api.get("scopes", [])]
-        if not scopes:
-            # If no scopes defined, just grant access without specific scopes
-            scopes = []
-
-        # Create client grant
         try:
-            grant_payload = {
-                "client_id": client_id,
-                "audience": api_identifier,
-                "scope": scopes
-            }
+            # Get API resource server
+            resource_servers = self._make_request("GET", "/resource-servers")
+            api = next((rs for rs in resource_servers if rs.get("identifier") == api_identifier), None)
 
-            self._make_request("POST", "/client-grants", data=grant_payload)
-            print(f"✅ Granted API access")
-            print(f"   Scopes: {', '.join(scopes) if scopes else 'all'}")
-        except Exception as e:
-            # Check if grant already exists
-            if "already exists" in str(e).lower():
-                print("✅ API access already granted")
+            if not api:
+                print(f"⚠️  API not found: {api_identifier}")
+                print(f"   Continuing without grant (may already be configured)")
             else:
-                raise
+                api_id = api["id"]
+
+                # Get API scopes
+                scopes = [scope["value"] for scope in api.get("scopes", [])]
+                if not scopes:
+                    # If no scopes defined, just grant access without specific scopes
+                    scopes = []
+
+                # Create client grant
+                try:
+                    grant_payload = {
+                        "client_id": client_id,
+                        "audience": api_identifier,
+                        "scope": scopes
+                    }
+
+                    self._make_request("POST", "/client-grants", data=grant_payload)
+                    print(f"✅ Granted API access")
+                    print(f"   Scopes: {', '.join(scopes) if scopes else 'all'}")
+                except Exception as e:
+                    # Check if grant already exists
+                    if "already exists" in str(e).lower():
+                        print("✅ API access already granted")
+                    else:
+                        print(f"⚠️  Could not create grant: {e}")
+                        print(f"   Continuing (grant may already exist)")
+        except Exception as e:
+            print(f"⚠️  Could not verify API grants: {e}")
+            print(f"   Continuing (grants may already be configured)")
 
         return existing, client_id, client_secret
 
@@ -622,7 +627,7 @@ class Auth0MCPSetup:
                     "callbacks": callbacks,
                     "web_origins": web_origins,
                     "allowed_origins": allowed_origins,
-                    "oidc_conformant": True,  # Use modern OIDC flow
+                    "oidc_conformant": True  # Use modern OIDC flow
                 }
 
                 client = self._make_request("POST", "/clients", data=payload)
@@ -789,6 +794,11 @@ def save_output_files(
             print("   Configuration will be incomplete")
             print("   Run with --recreate-client to generate a new secret")
 
+        if not test_client_secret:
+            print("⚠️  Warning: Test client secret not available")
+            print("   Configuration will be incomplete")
+            print("   Run with --recreate-client to generate a new secret")
+
         # auth0-config.json - single source of truth
         config = {
             "domain": domain,
@@ -864,13 +874,15 @@ oidc:
   audience: "{api_identifier}"
 
   # Pre-registered Auth0 application client ID
-  # This is used by the OAuth Proxy to exchange authorization codes
-  # NOTE: Use test_client (confidential client with secret)
+  # This is the OAuth client used by FastMCP Auth0Provider
+  # to authenticate with Auth0 during authorization code exchange
   clientId: "{test_client_id}"
 
-  # Kubernetes Secret containing the client secret
-  # Create with: python3 bin/create_secrets.py --namespace <namespace>
-  clientSecretsSecret: "mcp-auth0-mgmt"
+  # NOTE: Client secret is automatically loaded from Kubernetes secret
+  #   Secret name: <release-name>-auth0-credentials
+  #   Secret key: oauth-client-secret
+  # Create the secret with:
+  #   python bin/create_secrets.py --namespace <namespace> --release-name <release-name>
 
   # Optional: Uncomment if you need to override JWKS URI
   # jwksUri: "https://{domain}/.well-known/jwks.json"
@@ -1144,8 +1156,11 @@ Examples:
             print(f"   Continuing with client setup...")
             api = None
         
+        # Get existing management secret from correct location (try both old and new structure)
+        existing_mgmt_secret = config.get('management_api', {}).get('client_secret') or config.get('client_secret')
+
         client, client_id, client_secret = setup.create_management_api_client(
-            existing_secret=config.get('client_secret'),
+            existing_secret=existing_mgmt_secret,
             recreate=args.recreate_client
         )
 
@@ -1212,28 +1227,41 @@ Examples:
             test_client_secret=test_client_secret,
             user_auth_client_id=user_auth_client_id,
             connection_id=connection_id,
-            output_dir=args.output_dir
+            output_dir=args.output_dir,
+            save_config=False  # Don't save config here - will be saved with secret preservation logic below
         )
         
         if args.save_config:
+            # Preserve existing secrets if new ones aren't available
+            existing_mgmt_secret = config.get('management_api', {}).get('client_secret', '') or config.get('client_secret', '')
+            existing_test_secret = config.get('test_client', {}).get('client_secret', '')
+
             config_to_save = {
                 'domain': config['domain'],
-                'api_name': config['api_name'],
-                'api_identifier': config['api_identifier'],
+                'issuer': f"https://{config['domain']}",
+                'audience': config['api_identifier'],
                 'connection_id': connection_id,
-                'mgmt_client_id': client_id,
-                'output_dir': args.output_dir
+                'dcr_enabled': True,
+                'connection_promoted': True
             }
-            if client_secret:
-                config_to_save['client_secret'] = client_secret
 
-            # Save test client credentials
-            if test_client_id or test_client_secret:
-                config_to_save['test_client'] = {}
-                if test_client_id:
-                    config_to_save['test_client']['client_id'] = test_client_id
-                if test_client_secret:
-                    config_to_save['test_client']['client_secret'] = test_client_secret
+            # Save management client credentials (preserve existing secret if not available)
+            config_to_save['management_api'] = {
+                'client_id': client_id,
+                'client_secret': client_secret if client_secret else existing_mgmt_secret
+            }
+
+            # Save test client credentials (preserve existing secret if not available)
+            config_to_save['test_client'] = {
+                'client_id': test_client_id,
+                'client_secret': test_client_secret if test_client_secret else existing_test_secret
+            }
+
+            # Save user auth client (no secret for SPA client)
+            if user_auth_client_id:
+                config_to_save['user_auth_client'] = {
+                    'client_id': user_auth_client_id
+                }
 
             config_mgr.save_config(config_to_save)
         
@@ -1262,9 +1290,9 @@ Examples:
         image_name = make_env.get('IMAGE_NAME', 'cnpg-mcp')
         tag = make_env.get('TAG', 'latest')
 
-        print("1. Create Kubernetes Secrets with Auth0 credentials:")
-        print("   python3 bin/create_secrets.py --namespace <your-namespace> --replace")
-        print("   (creates mcp-auth0-config and mcp-auth0-mgmt secrets)")
+        print("1. Create Kubernetes Secret with Auth0 credentials:")
+        print("   python3 bin/create_secrets.py --namespace <your-namespace> --release-name <release-name> --replace")
+        print("   (creates <release-name>-auth0-credentials secret)")
         print()
         print("2. Build and push your MCP server container image:")
         print(f"   make build push")
