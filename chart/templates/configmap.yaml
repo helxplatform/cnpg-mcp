@@ -1,4 +1,3 @@
-{{- if not .Values.oidc.existingSecret }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -7,27 +6,53 @@ metadata:
     {{- include "cnpg-mcp.labels" . | nindent 4 }}
 data:
   oidc.yaml: |
-    # OIDC/OAuth2 Authentication Configuration
+    # FastMCP OAuth Proxy Configuration for Auth0
     # Auto-generated from Helm values
+    #
+    # The MCP server uses FastMCP's built-in OAuth Proxy to handle token issuance:
+    # - Receives Auth0 tokens internally (may be JWE encrypted)
+    # - Issues MCP-signed JWT tokens to clients (NOT Auth0 tokens)
+    # - Manages session binding between Auth0 and MCP tokens
 
-    # REQUIRED: OIDC Issuer URL
+    # ========================================================================
+    # REQUIRED: Auth0 Configuration
+    # ========================================================================
+
+    # Auth0 domain (OIDC issuer URL)
     issuer: {{ .Values.oidc.issuer | quote }}
 
-    # REQUIRED: Expected audience claim in JWT tokens
+    # API identifier (expected audience claim in tokens)
     audience: {{ .Values.oidc.audience | quote }}
 
+    # Auth0 application client ID (pre-registered application)
+    client_id: {{ .Values.oidc.clientId | quote }}
+
+    # Path to OAuth client secret file (mounted from Kubernetes Secret)
+    # Secret name: {{ .Release.Name }}-auth0-credentials
+    # Secret key: oauth-client-secret
+    # FastMCP Auth0Provider uses this to authenticate with Auth0 during token exchange
+    client_secret_file: "/etc/mcp/secrets/oauth-client-secret"
+
+    # ========================================================================
+    # REQUIRED: Server Configuration
+    # ========================================================================
+
+    {{- if and .Values.ingress.enabled .Values.ingress.host }}
+    # Public URL of this MCP server (derived from ingress configuration)
+    # Used for OAuth callbacks and metadata endpoints
+    public_url: {{ if .Values.ingress.tls.enabled }}"https://{{ .Values.ingress.host }}"{{ else }}"http://{{ .Values.ingress.host }}"{{ end }}
+    {{- end }}
+
+    # ========================================================================
+    # OPTIONAL: Advanced Configuration
+    # ========================================================================
+
     {{- if .Values.oidc.jwksUri }}
-    # OPTIONAL: Override JWKS URI (auto-discovered from issuer by default)
+    # Override JWKS URI (auto-discovered from issuer by default)
     jwks_uri: {{ .Values.oidc.jwksUri | quote }}
     {{- end }}
 
-    {{- if .Values.oidc.dcrProxyUrl }}
-    # OPTIONAL: DCR (Dynamic Client Registration) proxy URL
-    dcr_proxy_url: {{ .Values.oidc.dcrProxyUrl | quote }}
-    {{- end }}
-
     {{- if .Values.oidc.scope }}
-    # OPTIONAL: Required OAuth2 scope
+    # Required OAuth2 scope (default: openid)
     scope: {{ .Values.oidc.scope | quote }}
     {{- end }}
-{{- end }}

@@ -32,6 +32,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY src/cnpg_mcp_server.py .
 COPY src/auth_oidc.py .
+COPY src/auth_fastmcp.py .
 
 # Create a non-root user for security
 RUN useradd -m -u 1000 mcpuser && \
