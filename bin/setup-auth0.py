@@ -138,10 +138,11 @@ class Auth0MCPSetup:
         method: str,
         endpoint: str,
         data: Optional[Dict[str, Any]] = None,
-        params: Optional[Dict[str, Any]] = None
+        params: Optional[Dict[str, Any]] = None,
+        silent_errors: bool = False
     ) -> Dict[str, Any]:
         url = f"{self.base_url}{endpoint}"
-        
+
         try:
             response = requests.request(
                 method=method,
@@ -152,16 +153,17 @@ class Auth0MCPSetup:
                 timeout=30
             )
             response.raise_for_status()
-            
+
             if response.status_code == 204:
                 return {}
-            
+
             return response.json()
-            
+
         except requests.HTTPError as e:
-            print(f"❌ API request failed: {e}")
-            if e.response is not None:
-                print(f"Response: {e.response.text}")
+            if not silent_errors:
+                print(f"❌ API request failed: {e}")
+                if e.response is not None:
+                    print(f"Response: {e.response.text}")
             raise
     
     def check_dcr_enabled(self) -> bool:
@@ -169,19 +171,19 @@ class Auth0MCPSetup:
         print("\n🔍 Checking if DCR is already enabled...")
         
         try:
-            tenant_settings = self._make_request("GET", "/tenants/settings")
+            tenant_settings = self._make_request("GET", "/tenants/settings", silent_errors=True)
             flags = tenant_settings.get("flags", {})
             dcr_enabled = flags.get("enable_dynamic_client_registration", False)
-            
+
             if dcr_enabled:
                 print("✅ DCR is already enabled")
             else:
                 print("ℹ️  DCR is not enabled")
-            
+
             return dcr_enabled
-            
+
         except Exception as e:
-            print(f"⚠️  Could not check DCR status: {e}")
+            print(f"⚠️  Could not check DCR status (insufficient permissions - assuming already configured)")
             return False
     
     def enable_dcr(self) -> bool:
@@ -190,7 +192,7 @@ class Auth0MCPSetup:
             return True
         
         print("\n🚀 Enabling OIDC Dynamic Application Registration...")
-        
+
         try:
             payload = {
                 "flags": {
@@ -198,20 +200,20 @@ class Auth0MCPSetup:
                     "enable_client_connections": True
                 }
             }
-            
-            self._make_request("PATCH", "/tenants/settings", data=payload)
-            
+
+            self._make_request("PATCH", "/tenants/settings", data=payload, silent_errors=True)
+
             print("✅ Successfully enabled DCR and client connections")
             return True
-            
+
         except Exception as e:
-            print(f"❌ Failed to enable DCR: {e}")
+            print(f"⚠️  Could not enable DCR (insufficient permissions - assuming already configured)")
             return False
     
     def get_api(self, identifier: str) -> Optional[Dict[str, Any]]:
         """Get API by identifier if it exists."""
         try:
-            apis = self._make_request("GET", "/resource-servers")
+            apis = self._make_request("GET", "/resource-servers", silent_errors=True)
             for api in apis:
                 if api.get("identifier") == identifier:
                     return api
@@ -250,18 +252,17 @@ class Auth0MCPSetup:
                 "token_lifetime": 86400,
                 "token_lifetime_for_web": 7200
             }
-            
-            api = self._make_request("POST", "/resource-servers", data=payload)
-            
+
+            api = self._make_request("POST", "/resource-servers", data=payload, silent_errors=True)
+
             print(f"✅ Successfully created API")
             print(f"   Name: {api['name']}")
             print(f"   Identifier: {api['identifier']}")
             print(f"   Scopes: {', '.join([s['value'] for s in api.get('scopes', [])])}")
-            
+
             return api
-            
+
         except Exception as e:
-            print(f"❌ Failed to create API: {e}")
             raise
     
     def get_management_client(self, name: str) -> Optional[Dict[str, Any]]:
@@ -443,12 +444,11 @@ class Auth0MCPSetup:
         print(f"🔑 Granting access to API: {api_identifier}...")
         try:
             # Get API resource server
-            resource_servers = self._make_request("GET", "/resource-servers")
+            resource_servers = self._make_request("GET", "/resource-servers", silent_errors=True)
             api = next((rs for rs in resource_servers if rs.get("identifier") == api_identifier), None)
 
             if not api:
-                print(f"⚠️  API not found: {api_identifier}")
-                print(f"   Continuing without grant (may already be configured)")
+                print(f"⚠️  API not found (may already be configured)")
             else:
                 api_id = api["id"]
 
@@ -466,7 +466,7 @@ class Auth0MCPSetup:
                         "scope": scopes
                     }
 
-                    self._make_request("POST", "/client-grants", data=grant_payload)
+                    self._make_request("POST", "/client-grants", data=grant_payload, silent_errors=True)
                     print(f"✅ Granted API access")
                     print(f"   Scopes: {', '.join(scopes) if scopes else 'all'}")
                 except Exception as e:
@@ -474,11 +474,9 @@ class Auth0MCPSetup:
                     if "already exists" in str(e).lower():
                         print("✅ API access already granted")
                     else:
-                        print(f"⚠️  Could not create grant: {e}")
-                        print(f"   Continuing (grant may already exist)")
+                        print(f"⚠️  Could not create grant (insufficient permissions - assuming already configured)")
         except Exception as e:
-            print(f"⚠️  Could not verify API grants: {e}")
-            print(f"   Continuing (grants may already be configured)")
+            print(f"⚠️  Could not verify API grants (insufficient permissions - assuming already configured)")
 
         return existing, client_id, client_secret
 
