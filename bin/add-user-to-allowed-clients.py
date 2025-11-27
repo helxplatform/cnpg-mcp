@@ -34,10 +34,11 @@ def main():
 
     domain = config.get("domain")
     mgmt_api = config.get("management_api", {})
-    user_client_id = config.get("user_auth_client", {}).get("client_id")
+    # Use server_client (FastMCP OAuth client)
+    user_client_id = config.get("server_client", {}).get("client_id")
 
     print(f"Domain: {domain}")
-    print(f"MCP User Auth Client ID: {user_client_id}")
+    print(f"MCP Server Client ID: {user_client_id}")
     print()
 
     # Get management API token
@@ -110,12 +111,12 @@ def main():
     print()
 
     if user_client_id in allowed_clients:
-        print("✅ MCP user auth client is already in allowedClients!")
+        print("✅ MCP server client is already in allowedClients!")
         print("   The issue might be something else.")
         sys.exit(0)
 
     # Add MCP client to allowed clients
-    print(f"📝 Adding MCP user auth client to allowedClients...")
+    print(f"📝 Adding MCP server client to allowedClients...")
     allowed_clients.append(user_client_id)
 
     patch_response = requests.patch(
