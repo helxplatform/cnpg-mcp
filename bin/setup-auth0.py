@@ -68,7 +68,9 @@ class ConfigManager:
         }
         
         try:
-            os.makedirs(os.path.dirname(self.config_file), exist_ok=True)
+            config_dir = os.path.dirname(self.config_file)
+            if config_dir:  # Only create directory if path includes one
+                os.makedirs(config_dir, exist_ok=True)
             with open(self.config_file, 'w') as f:
                 json.dump(safe_config, f, indent=2)
             print(f"💾 Configuration saved to {self.config_file}")
@@ -354,14 +356,27 @@ class Auth0MCPSetup:
                         # Resource servers / APIs (for creating/reading MCP API)
                         "read:resource_servers",
                         "create:resource_servers",
+                        "update:resource_servers",
+                        "delete:resource_servers",
                         # Connection management (for promoting username-password auth)
-                        "update:connections",
                         "read:connections",
-                        # Client management (for converting DCR clients to public, checking config)
-                        "update:clients",
+                        "update:connections",
+                        # Client management (CRITICAL: need create/delete for setup script)
                         "read:clients",
+                        "create:clients",
+                        "update:clients",
+                        "delete:clients",
                         "read:client_keys",
-                        "read:client_summary"
+                        "read:client_summary",
+                        # Client grants (for granting API access to clients)
+                        "read:client_grants",
+                        "create:client_grants",
+                        "update:client_grants",
+                        "delete:client_grants",
+                        # User management (for adding users to allowedClients)
+                        "read:users",
+                        "update:users",
+                        "read:user_idp_tokens"
                     ]
                 }
 
@@ -369,9 +384,11 @@ class Auth0MCPSetup:
                     self._make_request("POST", f"/client-grants", data=grant_payload)
                     print("✅ Granted Management API scopes:")
                     print("   - Tenant settings: read, update")
-                    print("   - Resource servers (APIs): read, create")
+                    print("   - Resource servers (APIs): read, create, update, delete")
                     print("   - Connections: read, update")
-                    print("   - Clients: read, update, keys, summary")
+                    print("   - Clients: read, create, update, delete (+ keys, summary)")
+                    print("   - Client grants: read, create, update, delete")
+                    print("   - Users: read, update (+ idp_tokens)")
                 except Exception:
                     print("✅ Permissions already configured")
             
@@ -415,15 +432,80 @@ class Auth0MCPSetup:
                 print(f"   ⚠️  Client secret not available")
                 print(f"   💡 Run with --recreate-client to generate a new secret")
                 client_secret = ""
+
+            # Check and update callback URLs if needed
+            from urllib.parse import urlparse
+            parsed = urlparse(api_identifier)
+            mcp_base_url = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else None
+
+            existing_callbacks = existing.get('callbacks', [])
+            missing_callbacks = []
+
+            if mcp_base_url:
+                mcp_callback = f"{mcp_base_url}/auth/callback"
+                if mcp_callback not in existing_callbacks:
+                    missing_callbacks.append(mcp_callback)
+
+            if missing_callbacks:
+                print(f"   📝 Updating callback URLs...")
+                updated_callbacks = existing_callbacks + missing_callbacks
+
+                web_origins = existing.get('web_origins', [])
+                allowed_origins = existing.get('allowed_origins', [])
+
+                if mcp_base_url and mcp_base_url not in web_origins:
+                    web_origins = web_origins + [mcp_base_url]
+                    allowed_origins = allowed_origins + [mcp_base_url]
+
+                try:
+                    self._make_request(
+                        "PATCH",
+                        f"/clients/{client_id}",
+                        data={
+                            "callbacks": updated_callbacks,
+                            "web_origins": web_origins,
+                            "allowed_origins": allowed_origins
+                        }
+                    )
+                    print(f"   ✅ Updated callback URLs:")
+                    for cb in missing_callbacks:
+                        print(f"      + {cb}")
+                except Exception as e:
+                    print(f"   ⚠️  Failed to update callbacks: {e}")
+            else:
+                print(f"   ✅ Callback URLs already configured")
         else:
             # Create new test client
+            # FastMCP needs authorization_code for user authentication, not just client_credentials
             try:
+                # Extract base URL from api_identifier for callback configuration
+                from urllib.parse import urlparse
+                parsed = urlparse(api_identifier)
+                mcp_base_url = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else None
+
+                # Build callback URLs for FastMCP OAuth flow
+                callbacks = []
+                web_origins = []
+                allowed_origins = []
+
+                if mcp_base_url:
+                    mcp_callback = f"{mcp_base_url}/auth/callback"
+                    callbacks.append(mcp_callback)
+                    web_origins.append(mcp_base_url)
+                    allowed_origins.append(mcp_base_url)
+
                 payload = {
                     "name": name,
-                    "description": f"Test M2M client for accessing {api_identifier}",
-                    "app_type": "non_interactive",
-                    "grant_types": ["client_credentials"],
-                    "token_endpoint_auth_method": "client_secret_basic",
+                    "description": f"FastMCP OAuth client for {api_identifier} (supports user authentication)",
+                    "app_type": "regular_web",  # Web application, not M2M
+                    "grant_types": [
+                        "authorization_code",  # For user authentication
+                        "refresh_token"        # For session management
+                    ],
+                    "token_endpoint_auth_method": "client_secret_post",
+                    "callbacks": callbacks,
+                    "web_origins": web_origins,
+                    "allowed_origins": allowed_origins,
                     "oidc_conformant": True
                 }
 
@@ -432,12 +514,16 @@ class Auth0MCPSetup:
                 client_id = client["client_id"]
                 client_secret = client["client_secret"]
 
-                print(f"✅ Created new test M2M client")
+                print(f"✅ Created new FastMCP OAuth client")
                 print(f"   Client ID: {client_id}")
                 print(f"   Client Secret: {client_secret[:8]}...{client_secret[-4:]}")
+                print(f"   Type: Regular Web Application")
+                print(f"   Grant Types: authorization_code, refresh_token")
+                if callbacks:
+                    print(f"   Callback URL: {callbacks[0]}")
 
             except Exception as e:
-                print(f"❌ Failed to create test M2M client: {e}")
+                print(f"❌ Failed to create FastMCP OAuth client: {e}")
                 raise
 
         # Grant access to the MCP API (non-fatal if permissions insufficient)
@@ -781,7 +867,8 @@ def save_output_files(
     user_auth_client_id: str,
     connection_id: str,
     output_dir: str = ".",
-    save_config: bool = True
+    save_config: bool = True,
+    use_dcr: bool = False
 ) -> None:
     """Save configuration files."""
     print("\n💾 Saving configuration files...")
@@ -814,7 +901,7 @@ def save_output_files(
                 "client_id": user_auth_client_id
             },
             "connection_id": connection_id,
-            "dcr_enabled": True,
+            "dcr_enabled": use_dcr,
             "connection_promoted": True
         }
 
@@ -901,7 +988,8 @@ ingress:
   pathType: Prefix
   tls:
     enabled: true
-    secretName: mcp-tls
+    # secretName auto-generated as: <release-name>-tls
+    # Override only if you need a custom name
 
 # Resource limits
 resources:
@@ -994,14 +1082,17 @@ Examples:
     parser.add_argument("--config-file", default=DEFAULT_CONFIG_FILE)
     parser.add_argument("--domain", help="Auth0 tenant domain")
     parser.add_argument("--token", help="Management API access token (auto-generated if not provided)")
+    parser.add_argument("--deployment-name", help="Deployment name (e.g., 'CNPG MCP Prod', 'CNPG MCP Dev')")
     parser.add_argument("--api-name", help="Name for the MCP API")
     parser.add_argument("--api-identifier", help="API identifier/audience")
     parser.add_argument("--output-dir", default=".", help="Output directory")
     parser.add_argument("--connection-id", help="Connection ID to promote")
     parser.add_argument("--recreate-client", action="store_true",
                        help="Force recreate management client")
-    parser.add_argument("--save-config", action="store_true", default=True)
-    parser.add_argument("--no-save-config", action="store_false", dest="save_config")
+    parser.add_argument("--use-dcr", action="store_true", default=False,
+                       help="Enable Dynamic Client Registration (DCR) setup (default: False)")
+    parser.add_argument("--no-save-config", action="store_false", dest="save_config",
+                       help="Skip saving configuration to auth0-config.json")
     parser.add_argument("--yes", "-y", action="store_true",
                        help="Skip confirmation prompt")
 
@@ -1013,10 +1104,14 @@ Examples:
     
     config_mgr = ConfigManager(args.config_file)
     
+    # Get deployment name first so we can use it for API name default
+    deployment_name = config_mgr.get_value('deployment_name', args.deployment_name, 'DEPLOYMENT_NAME', 'CNPG MCP')
+
     config = {
         'domain': config_mgr.get_value('domain', args.domain, 'AUTH0_DOMAIN'),
         'token': config_mgr.get_value('token', args.token, 'AUTH0_MGMT_TOKEN'),
-        'api_name': config_mgr.get_value('api_name', args.api_name, 'AUTH0_API_NAME', 'MCP Server API'),
+        'deployment_name': deployment_name,
+        'api_name': config_mgr.get_value('api_name', args.api_name, 'AUTH0_API_NAME', f'{deployment_name} - API'),
         'api_identifier': config_mgr.get_value('api_identifier', args.api_identifier, 'AUTH0_API_IDENTIFIER') or config_mgr.config.get('audience'),
         'connection_id': config_mgr.get_value('connection_id', args.connection_id, 'AUTH0_CONNECTION_ID'),
         'client_secret': config_mgr.get_value('client_secret', None, 'AUTH0_MGMT_CLIENT_SECRET')
@@ -1109,7 +1204,8 @@ Examples:
                 user_auth_client_id=config_mgr.config.get('user_auth_client', {}).get('client_id', ''),
                 connection_id=config_mgr.config.get('connection_id', ''),
                 output_dir=args.output_dir,
-                save_config=False  # Don't overwrite config file - preserve existing secrets
+                save_config=False,  # Don't overwrite config file - preserve existing secrets
+                use_dcr=config_mgr.config.get('dcr_enabled', False)  # From saved config
             )
             print(f"\n✅ Values file regenerated from config")
             sys.exit(0)
@@ -1140,11 +1236,15 @@ Examples:
         setup = Auth0MCPSetup(config['domain'], config['token'])
 
         # Try to enable DCR, but don't fail if we lack permissions (may already be enabled)
-        try:
-            setup.enable_dcr()
-        except Exception as e:
-            print(f"⚠️  Could not verify/enable DCR (may already be configured): {e}")
-            print(f"   Continuing with client setup...")
+        # Only attempt DCR setup if --use-dcr flag is provided
+        if args.use_dcr:
+            try:
+                setup.enable_dcr()
+            except Exception as e:
+                print(f"⚠️  Could not verify/enable DCR (may already be configured): {e}")
+                print(f"   Continuing with client setup...")
+        else:
+            print("\nℹ️  Skipping DCR setup (use --use-dcr to enable)")
 
         # Try to create/verify API, but don't fail if we lack permissions (may already exist)
         try:
@@ -1158,6 +1258,7 @@ Examples:
         existing_mgmt_secret = config.get('management_api', {}).get('client_secret') or config.get('client_secret')
 
         client, client_id, client_secret = setup.create_management_api_client(
+            name=f"{config['deployment_name']} - Management API",
             existing_secret=existing_mgmt_secret,
             recreate=args.recreate_client
         )
@@ -1166,6 +1267,7 @@ Examples:
         test_client_config = config.get('test_client', {})
         try:
             test_client, test_client_id, test_client_secret = setup.create_test_api_client(
+                name=f"{config['deployment_name']} - Server",
                 api_identifier=config['api_identifier'],
                 existing_secret=test_client_config.get('client_secret'),
                 recreate=args.recreate_client
@@ -1211,6 +1313,7 @@ Examples:
         # Must be done AFTER connection is promoted
         user_auth_config = config.get('user_auth_client', {})
         user_auth_client, user_auth_client_id = setup.create_user_auth_client(
+            name=f"{config['deployment_name']} - Test Harness",
             api_identifier=config['api_identifier'],
             connection_id=connection_id,
             recreate=args.recreate_client
@@ -1226,7 +1329,8 @@ Examples:
             user_auth_client_id=user_auth_client_id,
             connection_id=connection_id,
             output_dir=args.output_dir,
-            save_config=False  # Don't save config here - will be saved with secret preservation logic below
+            save_config=False,  # Don't save config here - will be saved with secret preservation logic below
+            use_dcr=args.use_dcr
         )
         
         if args.save_config:
@@ -1239,7 +1343,7 @@ Examples:
                 'issuer': f"https://{config['domain']}",
                 'audience': config['api_identifier'],
                 'connection_id': connection_id,
-                'dcr_enabled': True,
+                'dcr_enabled': args.use_dcr,
                 'connection_promoted': True
             }
 
