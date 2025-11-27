@@ -27,11 +27,11 @@ data:
     # Auth0 application client ID (pre-registered application)
     client_id: {{ .Values.oidc.clientId | quote }}
 
-    # Path to OAuth client secret file (mounted from Kubernetes Secret)
+    # Path to server client secret file (mounted from Kubernetes Secret)
     # Secret name: {{ .Release.Name }}-auth0-credentials
-    # Secret key: oauth-client-secret
+    # Secret key: server-client-secret
     # FastMCP Auth0Provider uses this to authenticate with Auth0 during token exchange
-    client_secret_file: "/etc/mcp/secrets/oauth-client-secret"
+    client_secret_file: "/etc/mcp/secrets/server-client-secret"
 
     # ========================================================================
     # REQUIRED: Server Configuration

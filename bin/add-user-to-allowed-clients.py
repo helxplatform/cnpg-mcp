@@ -34,8 +34,8 @@ def main():
 
     domain = config.get("domain")
     mgmt_api = config.get("management_api", {})
-    # Use test_client (FastMCP OAuth client) instead of user_auth_client
-    user_client_id = config.get("test_client", {}).get("client_id")
+    # Use server_client (FastMCP OAuth client)
+    user_client_id = config.get("server_client", {}).get("client_id")
 
     print(f"Domain: {domain}")
     print(f"MCP Server Client ID: {user_client_id}")

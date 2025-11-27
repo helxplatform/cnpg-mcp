@@ -398,15 +398,15 @@ class Auth0MCPSetup:
             print(f"❌ Failed to create M2M application: {e}")
             raise
 
-    def create_test_api_client(
+    def create_server_client(
         self,
         api_identifier: str,
-        name: str = "MCP Test Client",
+        name: str = "MCP Server Client",
         existing_secret: Optional[str] = None,
         recreate: bool = False
     ) -> Tuple[Dict[str, Any], str, str]:
-        """Create M2M test client authorized for the MCP API."""
-        print(f"\n🧪 Setting up Test M2M Client for API access: {name}...")
+        """Create FastMCP OAuth server client for user authentication."""
+        print(f"\n🔧 Setting up FastMCP Server Client: {name}...")
 
         # Check if client exists
         all_clients = self._make_request("GET", "/clients")
@@ -566,18 +566,18 @@ class Auth0MCPSetup:
 
         return existing, client_id, client_secret
 
-    def create_user_auth_client(
+    def create_test_client(
         self,
         api_identifier: str,
         connection_id: Optional[str] = None,
-        name: str = "MCP User Auth Client",
+        name: str = "MCP Test Client",
         existing_secret: Optional[str] = None,
         recreate: bool = False
     ) -> Tuple[Dict[str, Any], str]:
         """
-        Create SPA/Native client for user authentication (Authorization Code + PKCE).
+        Create SPA/Native client for test harness (Authorization Code + PKCE).
 
-        This client is used for user login flows like Claude Desktop would use.
+        This client is used by test scripts like get-user-token.py.
 
         Args:
             api_identifier: API audience identifier
@@ -586,7 +586,7 @@ class Auth0MCPSetup:
             existing_secret: Not used for SPA clients (PKCE, no secret)
             recreate: Whether to recreate if exists
         """
-        print(f"\n👤 Setting up User Authentication Client: {name}...")
+        print(f"\n🧪 Setting up Test Harness Client: {name}...")
 
         # Extract base URL from api_identifier for MCP server callbacks
         # e.g., "https://cnpg-claude.wat.im/mcp" -> "https://cnpg-claude.wat.im"
@@ -862,9 +862,9 @@ def save_output_files(
     api_identifier: str,
     mgmt_client_id: str,
     mgmt_client_secret: str,
+    server_client_id: str,
+    server_client_secret: str,
     test_client_id: str,
-    test_client_secret: str,
-    user_auth_client_id: str,
     connection_id: str,
     output_dir: str = ".",
     save_config: bool = True,
@@ -879,8 +879,8 @@ def save_output_files(
             print("   Configuration will be incomplete")
             print("   Run with --recreate-client to generate a new secret")
 
-        if not test_client_secret:
-            print("⚠️  Warning: Test client secret not available")
+        if not server_client_secret:
+            print("⚠️  Warning: Server client secret not available")
             print("   Configuration will be incomplete")
             print("   Run with --recreate-client to generate a new secret")
 
@@ -893,12 +893,12 @@ def save_output_files(
                 "client_id": mgmt_client_id,
                 "client_secret": mgmt_client_secret
             },
-            "test_client": {
-                "client_id": test_client_id,
-                "client_secret": test_client_secret
+            "server_client": {
+                "client_id": server_client_id,
+                "client_secret": server_client_secret
             },
-            "user_auth_client": {
-                "client_id": user_auth_client_id
+            "test_client": {
+                "client_id": test_client_id
             },
             "connection_id": connection_id,
             "dcr_enabled": use_dcr,
@@ -961,11 +961,11 @@ oidc:
   # Pre-registered Auth0 application client ID
   # This is the OAuth client used by FastMCP Auth0Provider
   # to authenticate with Auth0 during authorization code exchange
-  clientId: "{test_client_id}"
+  clientId: "{server_client_id}"
 
   # NOTE: Client secret is automatically loaded from Kubernetes secret
   #   Secret name: <release-name>-auth0-credentials
-  #   Secret key: oauth-client-secret
+  #   Secret key: server-client-secret
   # Create the secret with:
   #   python bin/create_secrets.py --namespace <namespace> --release-name <release-name>
 
@@ -1190,7 +1190,7 @@ Examples:
             mgmt_client_id = saved_mgmt_client_id
 
             # Get secrets from saved config if available
-            test_client_secret = config_mgr.config.get('test_client', {}).get('client_secret', '')
+            server_client_secret = config_mgr.config.get('server_client', {}).get('client_secret', '')
             mgmt_client_secret = config_mgr.config.get('management_api', {}).get('client_secret', '') or config_mgr.config.get('client_secret', '')
 
             # Generate values file only (don't overwrite config with empty secrets)
@@ -1199,9 +1199,9 @@ Examples:
                 api_identifier=config['api_identifier'],
                 mgmt_client_id=mgmt_client_id,
                 mgmt_client_secret=mgmt_client_secret,  # From saved config
+                server_client_id=config_mgr.config.get('server_client', {}).get('client_id', ''),
+                server_client_secret=server_client_secret,  # From saved config
                 test_client_id=config_mgr.config.get('test_client', {}).get('client_id', ''),
-                test_client_secret=test_client_secret,  # From saved config
-                user_auth_client_id=config_mgr.config.get('user_auth_client', {}).get('client_id', ''),
                 connection_id=config_mgr.config.get('connection_id', ''),
                 output_dir=args.output_dir,
                 save_config=False,  # Don't overwrite config file - preserve existing secrets
@@ -1263,22 +1263,22 @@ Examples:
             recreate=args.recreate_client
         )
 
-        # Create test M2M client for API access (optional - skip if we lack permissions)
-        test_client_config = config.get('test_client', {})
+        # Create server client for FastMCP OAuth (optional - skip if we lack permissions)
+        server_client_config = config.get('server_client', {})
         try:
-            test_client, test_client_id, test_client_secret = setup.create_test_api_client(
+            server_client, server_client_id, server_client_secret = setup.create_server_client(
                 name=f"{config['deployment_name']} - Server",
                 api_identifier=config['api_identifier'],
-                existing_secret=test_client_config.get('client_secret'),
+                existing_secret=server_client_config.get('client_secret'),
                 recreate=args.recreate_client
             )
         except Exception as e:
-            print(f"⚠️  Could not verify/create test client (may already exist): {e}")
-            print(f"   Continuing with user auth client setup...")
-            # Use existing test client from config if available
-            test_client_id = test_client_config.get('client_id', '')
-            test_client_secret = test_client_config.get('client_secret', '')
-            test_client = None
+            print(f"⚠️  Could not verify/create server client (may already exist): {e}")
+            print(f"   Continuing with test client setup...")
+            # Use existing server client from config if available
+            server_client_id = server_client_config.get('client_id', '')
+            server_client_secret = server_client_config.get('client_secret', '')
+            server_client = None
 
         connection_id = config.get('connection_id')
         
@@ -1309,10 +1309,10 @@ Examples:
             print(f"⚠️  Warning: Connection promotion failed (may already be configured): {e}")
             print(f"   Continuing with client setup...")
 
-        # Create user auth client for Authorization Code Flow + PKCE
+        # Create test client for test harness (Authorization Code Flow + PKCE)
         # Must be done AFTER connection is promoted
-        user_auth_config = config.get('user_auth_client', {})
-        user_auth_client, user_auth_client_id = setup.create_user_auth_client(
+        test_client_config = config.get('test_client', {})
+        test_client, test_client_id = setup.create_test_client(
             name=f"{config['deployment_name']} - Test Harness",
             api_identifier=config['api_identifier'],
             connection_id=connection_id,
@@ -1324,9 +1324,9 @@ Examples:
             api_identifier=config['api_identifier'],
             mgmt_client_id=client_id,
             mgmt_client_secret=client_secret,
+            server_client_id=server_client_id,
+            server_client_secret=server_client_secret,
             test_client_id=test_client_id,
-            test_client_secret=test_client_secret,
-            user_auth_client_id=user_auth_client_id,
             connection_id=connection_id,
             output_dir=args.output_dir,
             save_config=False,  # Don't save config here - will be saved with secret preservation logic below
@@ -1336,7 +1336,7 @@ Examples:
         if args.save_config:
             # Preserve existing secrets if new ones aren't available
             existing_mgmt_secret = config.get('management_api', {}).get('client_secret', '') or config.get('client_secret', '')
-            existing_test_secret = config.get('test_client', {}).get('client_secret', '')
+            existing_server_secret = config.get('server_client', {}).get('client_secret', '')
 
             config_to_save = {
                 'domain': config['domain'],
@@ -1353,16 +1353,16 @@ Examples:
                 'client_secret': client_secret if client_secret else existing_mgmt_secret
             }
 
-            # Save test client credentials (preserve existing secret if not available)
-            config_to_save['test_client'] = {
-                'client_id': test_client_id,
-                'client_secret': test_client_secret if test_client_secret else existing_test_secret
+            # Save server client credentials (preserve existing secret if not available)
+            config_to_save['server_client'] = {
+                'client_id': server_client_id,
+                'client_secret': server_client_secret if server_client_secret else existing_server_secret
             }
 
-            # Save user auth client (no secret for SPA client)
-            if user_auth_client_id:
-                config_to_save['user_auth_client'] = {
-                    'client_id': user_auth_client_id
+            # Save test client (no secret for SPA client)
+            if test_client_id:
+                config_to_save['test_client'] = {
+                    'client_id': test_client_id
                 }
 
             config_mgr.save_config(config_to_save)
