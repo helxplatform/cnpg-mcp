@@ -258,8 +258,8 @@ Examples:
 
 Secret Created:
   <release-name>-auth0-credentials
-     - oauth-client-id: OAuth client ID (for FastMCP)
-     - oauth-client-secret: OAuth client secret (for FastMCP)
+     - server-client-id: Server client ID (for FastMCP)
+     - server-client-secret: Server client secret (for FastMCP)
      - mgmt-client-id: Management API client ID (for scripts)
      - mgmt-client-secret: Management API client secret (for scripts)
      - auth0-domain: Auth0 domain
@@ -352,10 +352,10 @@ Secret Created:
         print("❌ PyYAML not installed. Install with: pip install pyyaml")
         sys.exit(1)
 
-    # Extract test client credentials (used for OAuth flow)
-    test_client = auth_config.get('test_client', {})
-    test_client_id = test_client.get('client_id', '')
-    test_client_secret = test_client.get('client_secret', '')
+    # Extract server client credentials (used for FastMCP OAuth flow)
+    server_client = auth_config.get('server_client', {})
+    server_client_id = server_client.get('client_id', '')
+    server_client_secret = server_client.get('client_secret', '')
 
     # Extract management API credentials (used for setup scripts)
     mgmt_secret = mgmt_api.get('client_secret', '')
@@ -364,9 +364,9 @@ Secret Created:
     # Create organized secret with clear, descriptive keys
     # Use key-value pairs for better organization
     mgmt_data = {
-        # OAuth credentials (for FastMCP Auth0Provider)
-        'oauth-client-id': test_client_id,
-        'oauth-client-secret': test_client_secret,
+        # Server client credentials (for FastMCP Auth0Provider)
+        'server-client-id': server_client_id,
+        'server-client-secret': server_client_secret,
 
         # Management API credentials (for setup scripts)
         'mgmt-client-id': mgmt_client_id,
@@ -380,9 +380,9 @@ Secret Created:
     print("Secret to create:")
     print()
     print(f"{args.release_name}-auth0-credentials (Organized credentials)")
-    print("   OAuth Credentials (for FastMCP server):")
-    print(f"     - oauth-client-id: {mgmt_data.get('oauth-client-id', 'N/A')}")
-    print(f"     - oauth-client-secret: {'***hidden***' if mgmt_data.get('oauth-client-secret') else '***empty***'}")
+    print("   Server Client Credentials (for FastMCP server):")
+    print(f"     - server-client-id: {mgmt_data.get('server-client-id', 'N/A')}")
+    print(f"     - server-client-secret: {'***hidden***' if mgmt_data.get('server-client-secret') else '***empty***'}")
     print()
     print("   Management API Credentials (for setup scripts):")
     print(f"     - mgmt-client-id: {mgmt_data.get('mgmt-client-id', 'N/A')}")

@@ -115,8 +115,8 @@ oidc:
   #   python bin/create_secrets.py --namespace <namespace> --release-name <release-name>
   #
   # The secret must contain:
-  #   - oauth-client-id: Auth0 OAuth client ID
-  #   - oauth-client-secret: Auth0 OAuth client secret
+  #   - server-client-id: Server client ID (for FastMCP)
+  #   - server-client-secret: Server client secret (for FastMCP)
   #   - mgmt-client-id: Management API client ID (for scripts)
   #   - mgmt-client-secret: Management API client secret (for scripts)
   #   - auth0-domain: Auth0 domain

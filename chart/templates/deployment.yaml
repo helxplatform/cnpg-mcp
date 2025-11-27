@@ -90,8 +90,8 @@ spec:
           secret:
             secretName: {{ .Release.Name }}-auth0-credentials
             items:
-              - key: oauth-client-secret
-                path: oauth-client-secret
+              - key: server-client-secret
+                path: server-client-secret
 
       {{- with .Values.nodeSelector }}
       nodeSelector:

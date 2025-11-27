@@ -30,7 +30,7 @@ spec:
   tls:
     - hosts:
         - {{ .Values.ingress.host | quote }}
-      secretName: {{ .Values.ingress.tls.secretName }}
+      secretName: {{ .Values.ingress.tls.secretName | default (printf "%s-tls" $fullName) }}
   {{- end }}
   rules:
     - host: {{ .Values.ingress.host | quote }}
