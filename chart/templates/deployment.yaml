@@ -83,7 +83,7 @@ spec:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.testSidecar.image.repository | default .Values.image.repository }}:{{ .Values.testSidecar.image.tag | default (.Values.image.tag | default (printf "v%s" .Chart.AppVersion)) }}"
           imagePullPolicy: {{ .Values.testSidecar.image.pullPolicy | default .Values.image.pullPolicy }}
-          command: ["python", "src/cnpg_mcp_test_server.py"]
+          command: ["python", "cnpg_mcp_test_server.py"]
           args: ["--port", "{{ .Values.service.testPort }}"]
           ports:
             - name: http-test

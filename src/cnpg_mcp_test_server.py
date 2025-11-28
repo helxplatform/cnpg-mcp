@@ -68,7 +68,7 @@ mcp = FastMCP("cloudnative-pg-test")
 # Register all 12 tools by decorating the imported functions
 # These are the same tool implementations used by the main server
 
-@mcp.tool()
+@mcp.tool(name="list_postgres_clusters")
 async def list_postgres_clusters_tool(
     namespace: str = None,
     all_namespaces: bool = False,
@@ -78,19 +78,19 @@ async def list_postgres_clusters_tool(
     return await list_postgres_clusters(namespace, all_namespaces, detail_level)
 
 
-@mcp.tool()
+@mcp.tool(name="get_cluster_status")
 async def get_cluster_status_tool(
-    cluster_name: str,
+    name: str,
     namespace: str = None,
     detail_level: str = "detailed"
 ):
     """Get detailed status of a specific PostgreSQL cluster."""
-    return await get_cluster_status(cluster_name, namespace, detail_level)
+    return await get_cluster_status(name, namespace, detail_level)
 
 
-@mcp.tool()
+@mcp.tool(name="create_postgres_cluster")
 async def create_postgres_cluster_tool(
-    cluster_name: str,
+    name: str,
     instances: int = 3,
     storage_size: str = "1Gi",
     postgres_version: str = "16",
@@ -99,43 +99,43 @@ async def create_postgres_cluster_tool(
 ):
     """Create a new PostgreSQL cluster with high availability configuration."""
     return await create_postgres_cluster(
-        cluster_name, instances, storage_size, postgres_version, namespace, dry_run
+        name, instances, storage_size, postgres_version, namespace, dry_run
     )
 
 
-@mcp.tool()
+@mcp.tool(name="scale_postgres_cluster")
 async def scale_postgres_cluster_tool(
-    cluster_name: str,
+    name: str,
     instances: int,
     namespace: str = None
 ):
     """Scale a PostgreSQL cluster by changing the number of instances."""
-    return await scale_postgres_cluster(cluster_name, instances, namespace)
+    return await scale_postgres_cluster(name, instances, namespace)
 
 
-@mcp.tool()
+@mcp.tool(name="delete_postgres_cluster")
 async def delete_postgres_cluster_tool(
-    cluster_name: str,
+    name: str,
     namespace: str = None,
     confirm: bool = False
 ):
     """Delete a PostgreSQL cluster."""
-    return await delete_postgres_cluster(cluster_name, namespace, confirm)
+    return await delete_postgres_cluster(name, namespace, confirm)
 
 
-@mcp.tool()
+@mcp.tool(name="list_postgres_roles")
 async def list_postgres_roles_tool(
-    cluster_name: str,
+    cluster: str,
     namespace: str = None
 ):
     """List all PostgreSQL roles (users) in a cluster."""
-    return await list_postgres_roles(cluster_name, namespace)
+    return await list_postgres_roles(cluster, namespace)
 
 
-@mcp.tool()
+@mcp.tool(name="create_postgres_role")
 async def create_postgres_role_tool(
-    cluster_name: str,
-    role_name: str,
+    cluster: str,
+    name: str,
     login: bool = True,
     superuser: bool = False,
     inherit: bool = True,
@@ -147,15 +147,15 @@ async def create_postgres_role_tool(
 ):
     """Create a new PostgreSQL role (user) with auto-generated password."""
     return await create_postgres_role(
-        cluster_name, role_name, login, superuser, inherit,
+        cluster, name, login, superuser, inherit,
         createdb, createrole, replication, namespace, dry_run
     )
 
 
-@mcp.tool()
+@mcp.tool(name="update_postgres_role")
 async def update_postgres_role_tool(
-    cluster_name: str,
-    role_name: str,
+    cluster: str,
+    name: str,
     login: bool = None,
     superuser: bool = None,
     inherit: bool = None,
@@ -167,35 +167,35 @@ async def update_postgres_role_tool(
 ):
     """Update an existing PostgreSQL role's attributes and optionally reset password."""
     return await update_postgres_role(
-        cluster_name, role_name, login, superuser, inherit,
+        cluster, name, login, superuser, inherit,
         createdb, createrole, replication, reset_password, namespace
     )
 
 
-@mcp.tool()
+@mcp.tool(name="delete_postgres_role")
 async def delete_postgres_role_tool(
-    cluster_name: str,
-    role_name: str,
+    cluster: str,
+    name: str,
     namespace: str = None,
     confirm: bool = False
 ):
     """Delete a PostgreSQL role and its associated secret."""
-    return await delete_postgres_role(cluster_name, role_name, namespace, confirm)
+    return await delete_postgres_role(cluster, name, namespace, confirm)
 
 
-@mcp.tool()
+@mcp.tool(name="list_postgres_databases")
 async def list_postgres_databases_tool(
-    cluster_name: str,
+    cluster: str,
     namespace: str = None
 ):
     """List all databases managed by Database CRDs."""
-    return await list_postgres_databases(cluster_name, namespace)
+    return await list_postgres_databases(cluster, namespace)
 
 
-@mcp.tool()
+@mcp.tool(name="create_postgres_database")
 async def create_postgres_database_tool(
-    cluster_name: str,
-    database_name: str,
+    cluster: str,
+    name: str,
     owner: str,
     reclaim_policy: str = "retain",
     namespace: str = None,
@@ -203,18 +203,18 @@ async def create_postgres_database_tool(
 ):
     """Create a new database using Database CRD."""
     return await create_postgres_database(
-        cluster_name, database_name, owner, reclaim_policy, namespace, dry_run
+        cluster, name, owner, reclaim_policy, namespace, dry_run
     )
 
 
-@mcp.tool()
+@mcp.tool(name="delete_postgres_database")
 async def delete_postgres_database_tool(
-    database_name: str,
+    name: str,
     namespace: str = None,
     confirm: bool = False
 ):
     """Delete a Database CRD (actual deletion depends on reclaim policy)."""
-    return await delete_postgres_database(database_name, namespace, confirm)
+    return await delete_postgres_database(name, namespace, confirm)
 
 
 logger.info("✅ Registered 12 tools with test MCP server")
