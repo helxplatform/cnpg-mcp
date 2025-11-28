@@ -39,6 +39,8 @@ securityContext: {}
 service:
   type: ClusterIP
   port: 4204
+  # Test sidecar port (only used when testSidecar.enabled = true)
+  testPort: 3001
 
 ingress:
   enabled: false
@@ -121,3 +123,24 @@ oidc:
   #   - mgmt-client-secret: Management API client secret (for scripts)
   #   - auth0-domain: Auth0 domain
   #   - connection-id: Auth0 connection ID
+
+# Test Sidecar Configuration
+# Enables a second container for testing using standard OIDC authentication
+testSidecar:
+  # Enable test sidecar container
+  enabled: false
+
+  # Image for test sidecar (defaults to main image)
+  image:
+    repository: ""  # Leave empty to use main image
+    tag: ""         # Leave empty to use main image tag
+    pullPolicy: ""  # Leave empty to use main image pullPolicy
+
+  # Resource limits for test sidecar
+  resources: {}
+    # limits:
+    #   cpu: 200m
+    #   memory: 256Mi
+    # requests:
+    #   cpu: 100m
+    #   memory: 128Mi

@@ -11,5 +11,11 @@ spec:
       targetPort: http
       protocol: TCP
       name: http
+{{- if .Values.testSidecar.enabled }}
+    - port: {{ .Values.service.testPort }}
+      targetPort: http-test
+      protocol: TCP
+      name: http-test
+{{- end }}
   selector:
     {{- include "cnpg-mcp.selectorLabels" . | nindent 4 }}

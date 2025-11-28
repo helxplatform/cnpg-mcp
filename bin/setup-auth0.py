@@ -474,6 +474,31 @@ class Auth0MCPSetup:
                     print(f"   ⚠️  Failed to update callbacks: {e}")
             else:
                 print(f"   ✅ Callback URLs already configured")
+
+            # Check and update grant types if needed
+            existing_grant_types = existing.get('grant_types', [])
+            required_grant_types = ["authorization_code", "refresh_token", "client_credentials"]
+            missing_grant_types = [gt for gt in required_grant_types if gt not in existing_grant_types]
+
+            if missing_grant_types:
+                print(f"   📝 Updating grant types...")
+                updated_grant_types = list(set(existing_grant_types + missing_grant_types))
+
+                try:
+                    self._make_request(
+                        "PATCH",
+                        f"/clients/{client_id}",
+                        data={
+                            "grant_types": updated_grant_types
+                        }
+                    )
+                    print(f"   ✅ Updated grant types:")
+                    for gt in missing_grant_types:
+                        print(f"      + {gt}")
+                except Exception as e:
+                    print(f"   ⚠️  Failed to update grant types: {e}")
+            else:
+                print(f"   ✅ Grant types already configured")
         else:
             # Create new test client
             # FastMCP needs authorization_code for user authentication, not just client_credentials
@@ -496,11 +521,12 @@ class Auth0MCPSetup:
 
                 payload = {
                     "name": name,
-                    "description": f"FastMCP OAuth client for {api_identifier} (supports user authentication)",
-                    "app_type": "regular_web",  # Web application, not M2M
+                    "description": f"FastMCP OAuth client for {api_identifier} (supports user authentication and M2M)",
+                    "app_type": "regular_web",  # Web application with M2M support
                     "grant_types": [
-                        "authorization_code",  # For user authentication
-                        "refresh_token"        # For session management
+                        "authorization_code",  # For user authentication (FastMCP)
+                        "refresh_token",       # For session management
+                        "client_credentials"   # For M2M testing (test-mcp.py)
                     ],
                     "token_endpoint_auth_method": "client_secret_post",
                     "callbacks": callbacks,
@@ -517,8 +543,8 @@ class Auth0MCPSetup:
                 print(f"✅ Created new FastMCP OAuth client")
                 print(f"   Client ID: {client_id}")
                 print(f"   Client Secret: {client_secret[:8]}...{client_secret[-4:]}")
-                print(f"   Type: Regular Web Application")
-                print(f"   Grant Types: authorization_code, refresh_token")
+                print(f"   Type: Regular Web Application (with M2M support)")
+                print(f"   Grant Types: authorization_code, refresh_token, client_credentials")
                 if callbacks:
                     print(f"   Callback URL: {callbacks[0]}")
 
@@ -757,6 +783,40 @@ class Auth0MCPSetup:
             except Exception as e:
                 print(f"   ⚠️  Failed to enable connection: {e}")
                 print(f"   You may need to manually enable the connection in Auth0 dashboard")
+
+        # Grant access to the MCP API (required for user auth to work)
+        print(f"🔑 Granting test client access to API: {api_identifier}...")
+        try:
+            # Get API resource server
+            resource_servers = self._make_request("GET", "/resource-servers", silent_errors=True)
+            api = next((rs for rs in resource_servers if rs.get("identifier") == api_identifier), None)
+
+            if not api:
+                print(f"⚠️  API not found (may already be configured)")
+            else:
+                # Get API scopes (including openid if defined)
+                scopes = [scope["value"] for scope in api.get("scopes", [])]
+
+                # Create client grant
+                try:
+                    grant_payload = {
+                        "client_id": client_id,
+                        "audience": api_identifier,
+                        "scope": scopes
+                    }
+
+                    self._make_request("POST", "/client-grants", data=grant_payload, silent_errors=True)
+                    print(f"✅ Granted API access to test client")
+                    print(f"   Scopes: {', '.join(scopes) if scopes else 'all'}")
+                except Exception as e:
+                    # Check if grant already exists
+                    if "already exists" in str(e).lower() or "conflict" in str(e).lower():
+                        print(f"✅ API access already granted")
+                    else:
+                        print(f"⚠️  Failed to grant API access: {e}")
+                        print(f"   The client may not be able to access the API")
+        except Exception as e:
+            print(f"⚠️  Failed to setup API grant: {e}")
 
         return existing, client_id
 
