@@ -120,7 +120,7 @@ async def delete_postgres_cluster_tool(
     confirm_deletion: bool = False
 ):
     """Delete a PostgreSQL cluster."""
-    return await delete_postgres_cluster(name, namespace, confirm_deletion)
+    return await delete_postgres_cluster(name, confirm_deletion, namespace)
 
 
 @mcp.tool(name="list_postgres_roles")
@@ -219,9 +219,7 @@ async def delete_postgres_database_tool(
     confirm: bool = False
 ):
     """Delete a Database CRD (actual deletion depends on reclaim policy)."""
-    # Note: cluster_name is accepted for API consistency but not used in deletion
-    # Database CRDs are deleted by name alone
-    return await delete_postgres_database(database_name, namespace, confirm)
+    return await delete_postgres_database(cluster_name, database_name, namespace, confirm)
 
 
 logger.info("Registered 12 tools with main MCP server")
