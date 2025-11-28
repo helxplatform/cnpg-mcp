@@ -166,9 +166,13 @@ async def update_postgres_role_tool(
     namespace: str = None
 ):
     """Update an existing PostgreSQL role's attributes and optionally reset password."""
+    # Generate new password if reset_password is True
+    from cnpg_tools import generate_password
+    password = generate_password() if reset_password else None
+
     return await update_postgres_role(
         cluster_name, role_name, login, superuser, inherit,
-        createdb, createrole, replication, reset_password, namespace
+        createdb, createrole, replication, password, namespace
     )
 
 
