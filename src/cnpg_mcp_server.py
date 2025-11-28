@@ -213,11 +213,14 @@ async def create_postgres_database_tool(
 
 @mcp.tool(name="delete_postgres_database")
 async def delete_postgres_database_tool(
+    cluster_name: str,
     database_name: str,
     namespace: str = None,
     confirm: bool = False
 ):
     """Delete a Database CRD (actual deletion depends on reclaim policy)."""
+    # Note: cluster_name is accepted for API consistency but not used in deletion
+    # Database CRDs are deleted by name alone
     return await delete_postgres_database(database_name, namespace, confirm)
 
 
