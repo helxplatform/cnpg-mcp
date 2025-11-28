@@ -217,7 +217,7 @@ async def delete_postgres_database_tool(
     return await delete_postgres_database(database_name, namespace, confirm)
 
 
-logger.info(f"Registered {len(mcp._tools)} tools with main MCP server")
+logger.info("Registered 12 tools with main MCP server")
 
 # ============================================================================
 # Health Check Endpoints
@@ -242,14 +242,14 @@ async def run_stdio_transport():
     logger.info("=" * 70)
     logger.info("CloudNativePG MCP Server (stdio mode)")
     logger.info("=" * 70)
-    logger.info(f"Tools: {len(mcp._tools)} CloudNativePG management tools")
+    logger.info("Tools: 12 CloudNativePG management tools")
     logger.info("=" * 70)
 
     # Run stdio transport
     await mcp.run_stdio_async()
 
 
-async def run_http_transport(host: str, port: int):
+def run_http_transport(host: str, port: int):
     """Run server in HTTP mode with FastMCP OAuth."""
     from auth_fastmcp import create_auth0_oauth_proxy, get_auth_config_summary, load_oidc_config_from_file
 
@@ -270,9 +270,8 @@ async def run_http_transport(host: str, port: int):
     logger.info("=" * 80)
     logger.info("FastMCP OAuth Configuration:")
     logger.info("=" * 80)
-    for line in config_summary.split('\n'):
-        if line.strip():
-            logger.info(f"  {line}")
+    for key, value in config_summary.items():
+        logger.info(f"  {key}: {value}")
     logger.info("=" * 80)
 
     # Set OAuth on mcp instance
@@ -292,7 +291,7 @@ async def run_http_transport(host: str, port: int):
     logger.info(f"  Listening on: {host}:{port}")
     logger.info(f"  MCP Endpoint: /mcp")
     logger.info(f"  Auth: FastMCP OAuth Proxy (issues MCP tokens)")
-    logger.info(f"  Tools: {len(mcp._tools)} CloudNativePG management tools")
+    logger.info("  Tools: 12 CloudNativePG management tools")
     logger.info(f"  OAuth Discovery: /.well-known/oauth-authorization-server")
     logger.info(f"  Client Registration: /register")
     logger.info("=" * 80)
@@ -348,8 +347,7 @@ def main():
         import asyncio
         asyncio.run(run_stdio_transport())
     else:
-        import asyncio
-        asyncio.run(run_http_transport(args.host, args.port))
+        run_http_transport(args.host, args.port)
 
 
 if __name__ == "__main__":

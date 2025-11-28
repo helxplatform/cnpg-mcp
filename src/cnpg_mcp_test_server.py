@@ -217,7 +217,7 @@ async def delete_postgres_database_tool(
     return await delete_postgres_database(database_name, namespace, confirm)
 
 
-logger.info(f"✅ Registered {len(mcp._tools)} tools with test MCP server")
+logger.info("✅ Registered 12 tools with test MCP server")
 
 # ============================================================================
 # Health Check Endpoints
@@ -262,7 +262,7 @@ def main():
     logger.info(f"Listening on: {args.host}:{args.port}")
     logger.info(f"Endpoint: /test")
     logger.info(f"Auth: Standard OIDC (Auth0 JWT tokens)")
-    logger.info(f"Tools: {len(mcp._tools)} CloudNativePG management tools")
+    logger.info("Tools: 12 CloudNativePG management tools")
     logger.info("=" * 70)
 
     # Create OIDC auth provider
