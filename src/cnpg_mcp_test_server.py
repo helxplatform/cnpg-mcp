@@ -117,10 +117,10 @@ async def scale_postgres_cluster_tool(
 async def delete_postgres_cluster_tool(
     name: str,
     namespace: str = None,
-    confirm: bool = False
+    confirm_deletion: bool = False
 ):
     """Delete a PostgreSQL cluster."""
-    return await delete_postgres_cluster(name, namespace, confirm)
+    return await delete_postgres_cluster(name, namespace, confirm_deletion)
 
 
 @mcp.tool(name="list_postgres_roles")
