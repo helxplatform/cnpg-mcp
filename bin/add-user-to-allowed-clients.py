@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """
-Add MCP user auth client to user's allowedClients array.
+Add MCP clients to user's allowedClients array.
 
 This fixes the "User not allowed for this application" error when
 your Auth0 setup uses app_metadata.allowedClients for authorization.
+
+Supports adding users to:
+- server: Server client (for Claude Desktop production use)
+- test: Test client (for test harness / local testing)
+- both: Both clients
 """
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -24,7 +30,44 @@ def load_auth0_config():
         return json.load(f)
 
 
+def prompt_client_type():
+    """Prompt user to choose which client to add access to."""
+    print()
+    print("Which client should this user have access to?")
+    print()
+    print("  1. server  - Server client (for Claude Desktop production)")
+    print("  2. test    - Test client (for test harness / local testing)")
+    print("  3. both    - Both clients")
+    print()
+
+    while True:
+        choice = input("Enter choice (1-3): ").strip()
+        if choice == "1":
+            return "server"
+        elif choice == "2":
+            return "test"
+        elif choice == "3":
+            return "both"
+        else:
+            print("❌ Invalid choice. Please enter 1, 2, or 3.")
+
+
 def main():
+    parser = argparse.ArgumentParser(
+        description="Add user to allowed clients for MCP access"
+    )
+    parser.add_argument(
+        "--email",
+        help="User email address"
+    )
+    parser.add_argument(
+        "--client-type",
+        choices=["server", "test", "both"],
+        help="Which client to grant access to (server=production, test=testing, both=both)"
+    )
+
+    args = parser.parse_args()
+
     print("=" * 70)
     print("Add User to Allowed Clients")
     print("=" * 70)
@@ -34,10 +77,22 @@ def main():
 
     domain = config.get("domain")
     mgmt_api = config.get("management_api", {})
-    user_client_id = config.get("user_auth_client", {}).get("client_id")
+
+    # Get both client IDs
+    server_client_id = config.get("server_client", {}).get("client_id")
+    test_client_id = config.get("test_client", {}).get("client_id")
 
     print(f"Domain: {domain}")
-    print(f"MCP User Auth Client ID: {user_client_id}")
+    print(f"Server Client ID: {server_client_id}")
+    print(f"Test Client ID: {test_client_id}")
+
+    # Determine which client(s) to add
+    client_type = args.client_type
+    if not client_type:
+        client_type = prompt_client_type()
+
+    print()
+    print(f"Client Type: {client_type}")
     print()
 
     # Get management API token
@@ -65,7 +120,9 @@ def main():
     print()
 
     # Get user email
-    user_email = input("Enter your Auth0 user email: ").strip()
+    user_email = args.email
+    if not user_email:
+        user_email = input("Enter your Auth0 user email: ").strip()
 
     if not user_email:
         print("❌ Email required")
@@ -109,14 +166,28 @@ def main():
     print(f"Current allowedClients: {allowed_clients}")
     print()
 
-    if user_client_id in allowed_clients:
-        print("✅ MCP user auth client is already in allowedClients!")
-        print("   The issue might be something else.")
+    # Determine which client IDs to add
+    clients_to_add = []
+    client_names = []
+
+    if client_type in ["server", "both"]:
+        if server_client_id and server_client_id not in allowed_clients:
+            clients_to_add.append(server_client_id)
+            client_names.append("server client")
+
+    if client_type in ["test", "both"]:
+        if test_client_id and test_client_id not in allowed_clients:
+            clients_to_add.append(test_client_id)
+            client_names.append("test client")
+
+    if not clients_to_add:
+        print("✅ User already has access to the requested client(s)!")
+        print("   No changes needed.")
         sys.exit(0)
 
-    # Add MCP client to allowed clients
-    print(f"📝 Adding MCP user auth client to allowedClients...")
-    allowed_clients.append(user_client_id)
+    # Add client(s) to allowed clients
+    print(f"📝 Adding {', '.join(client_names)} to allowedClients...")
+    allowed_clients.extend(clients_to_add)
 
     patch_response = requests.patch(
         f"https://{domain}/api/v2/users/{user_id}",
@@ -140,11 +211,18 @@ def main():
     print(f"New allowedClients: {updated_allowed}")
     print()
     print("=" * 70)
-    print("🎉 You can now authenticate!")
+    print("🎉 Access granted!")
     print("=" * 70)
     print()
-    print("Run:")
-    print("  ./test/test/get-user-token.py")
+
+    if client_type in ["server", "both"]:
+        print("✅ Can now connect via Claude Desktop (server client)")
+
+    if client_type in ["test", "both"]:
+        print("✅ Can now run test harness:")
+        print("   ./test/get-user-token.py")
+        print("   ./test/test-mcp.py --transport http --url https://claude-cnpg.wat.im")
+
     print()
 
 

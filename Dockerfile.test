@@ -1,12 +1,14 @@
-# CloudNativePG MCP Server - Production Dockerfile
-# Optimized for Kubernetes deployment with in-cluster authentication and OIDC support
+# CloudNativePG MCP Test Server - Production Dockerfile
+# Test server using OIDC authentication (accepts Auth0 JWT tokens)
+# This is the sidecar container running alongside the main server
 
 FROM python:3.11-slim
 
 # Metadata
 LABEL maintainer="CloudNativePG MCP Server"
-LABEL description="MCP Server for managing PostgreSQL clusters via CloudNativePG"
+LABEL description="MCP Test Server for CloudNativePG (OIDC authentication)"
 LABEL version="1.0.0"
+LABEL component="test-sidecar"
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
@@ -30,11 +32,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY src/cnpg_mcp_server.py .
 COPY src/cnpg_mcp_test_server.py .
 COPY src/cnpg_tools.py .
 COPY src/auth_oidc.py .
-COPY src/auth_fastmcp.py .
 
 # Create a non-root user for security
 RUN useradd -m -u 1000 mcpuser && \
@@ -42,15 +42,14 @@ RUN useradd -m -u 1000 mcpuser && \
 
 USER mcpuser
 
-# Expose HTTP port
-EXPOSE 4204
+# Expose test server port
+EXPOSE 3001
 
 # Health check endpoint
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:4204/healthz || exit 1
+    CMD curl -f http://localhost:3001/healthz || exit 1
 
-# Default to HTTP transport (for Kubernetes deployment)
-# The server will use in-cluster config automatically when running in a pod
-# OIDC configuration should be provided via environment variables:
-#   OIDC_ISSUER, OIDC_AUDIENCE, OIDC_JWKS_URI (optional), DCR_PROXY_URL (optional)
-CMD ["python", "cnpg_mcp_server.py", "--transport", "http", "--host", "0.0.0.0", "--port", "4204"]
+# Default command - run test server on port 3001
+# OIDC configuration should be provided via environment variables or config file:
+#   OIDC_ISSUER, OIDC_AUDIENCE
+CMD ["python", "cnpg_mcp_test_server.py", "--port", "3001"]

@@ -332,17 +332,9 @@ def main():
     domain = config.get("domain")
     audience = config.get("audience")
 
-    # Check for user_auth_client (SPA/Native client for user authentication)
-    user_client = config.get("user_auth_client", {})
-    client_id = user_client.get("client_id")
-
-    if not client_id:
-        # Fallback to test_client (might not have the right grant types)
-        print("⚠️  No user_auth_client found in config")
-        print("   Trying test_client (may not work)...")
-        print()
-        test_client = config.get("test_client", {})
-        client_id = test_client.get("client_id")
+    # Check for test_client (SPA/Native client for test harness)
+    test_client_config = config.get("test_client", {})
+    client_id = test_client_config.get("client_id")
 
     if not all([domain, client_id, audience]):
         print("❌ Incomplete Auth0 configuration")

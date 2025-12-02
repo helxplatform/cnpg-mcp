@@ -44,15 +44,14 @@ spec:
 
           # Mount OIDC configuration as volume
           volumeMounts:
-            {{- if .Values.oidc.existingSecret }}
+            # Always mount ConfigMap for OIDC config
             - name: oidc-config
               mountPath: /etc/mcp
               readOnly: true
-            {{- else }}
-            - name: oidc-config
-              mountPath: /etc/mcp
+            # Mount Auth0 credentials secret
+            - name: auth0-credentials
+              mountPath: /etc/mcp/secrets
               readOnly: true
-            {{- end }}
 
           livenessProbe:
             httpGet:
@@ -77,23 +76,73 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
 
+{{- if .Values.testSidecar.enabled }}
+        # Test sidecar container using OIDC authentication
+        - name: {{ .Chart.Name }}-test
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.testSidecar.image.repository | default .Values.image.repository }}:{{ .Values.testSidecar.image.tag | default (.Values.image.tag | default (printf "v%s" .Chart.AppVersion)) }}"
+          imagePullPolicy: {{ .Values.testSidecar.image.pullPolicy | default .Values.image.pullPolicy }}
+          command: ["python", "cnpg_mcp_test_server.py"]
+          args: ["--port", "{{ .Values.service.testPort }}"]
+          ports:
+            - name: http-test
+              containerPort: {{ .Values.service.testPort }}
+              protocol: TCP
+
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+
+          # Mount OIDC configuration as volume (shared with main container)
+          volumeMounts:
+            - name: oidc-config
+              mountPath: /etc/mcp
+              readOnly: true
+            - name: auth0-credentials
+              mountPath: /etc/mcp/secrets
+              readOnly: true
+
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http-test
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http-test
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          resources:
+            {{- toYaml .Values.testSidecar.resources | nindent 12 }}
+{{- end }}
+
       # Define volumes for OIDC configuration
       volumes:
-        {{- if .Values.oidc.existingSecret }}
-        - name: oidc-config
-          secret:
-            secretName: {{ .Values.oidc.existingSecret.name }}
-            items:
-              - key: {{ .Values.oidc.existingSecret.configKey | default "oidc.yaml" }}
-                path: oidc.yaml
-        {{- else }}
+        # Always use ConfigMap for OIDC config (non-sensitive)
         - name: oidc-config
           configMap:
             name: {{ include "cnpg-mcp.fullname" . }}-oidc-config
             items:
               - key: oidc.yaml
                 path: oidc.yaml
-        {{- end }}
+        # Mount Auth0 credentials secret (derived from release name)
+        - name: auth0-credentials
+          secret:
+            secretName: {{ .Release.Name }}-auth0-credentials
+            items:
+              - key: server-client-secret
+                path: server-client-secret
 
       {{- with .Values.nodeSelector }}
       nodeSelector:

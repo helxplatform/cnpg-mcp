@@ -39,6 +39,8 @@ securityContext: {}
 service:
   type: ClusterIP
   port: 4204
+  # Test sidecar port (only used when testSidecar.enabled = true)
+  testPort: 3001
 
 ingress:
   enabled: false
@@ -46,15 +48,16 @@ ingress:
   annotations: {}
     # kubernetes.io/ingress.class: nginx
     # kubernetes.io/tls-acme: "true"
-  hosts:
-    - host: chart-example.local
-      paths:
-        - path: /
-          pathType: ImplementationSpecific
-  tls: []
-  #  - secretName: chart-example-tls
-  #    hosts:
-  #      - chart-example.local
+  # Single hostname for this MCP server (simplified from array)
+  host: "chart-example.local"
+  # Path for the MCP endpoint (usually /)
+  path: /
+  pathType: ImplementationSpecific
+  # TLS configuration
+  tls:
+    enabled: false
+    secretName: ""
+    # secretName: chart-example-tls
 
 resources: {}
   # We usually recommend not to specify default resources and to leave this as a conscious
@@ -90,11 +93,11 @@ oidc:
   #   Keycloak: https://keycloak.example.com/realms/your-realm
   #   Okta: https://your-org.okta.com/oauth2/default
   #   Azure AD: https://login.microsoftonline.com/{tenant-id}/v2.0
-  issuer: "https://auth.example.com"
+  issuer: "https://dev-15i-ae3b.auth0.com"
 
   # REQUIRED: Expected audience claim in JWT tokens
   # This should match what your IdP issues in the 'aud' claim
-  audience: "mcp-api"
+  audience: "https://cnpg-mcp.wat.im/mcp"
 
   # OPTIONAL: Override JWKS URI (auto-discovered from issuer by default)
   # Only set if your IdP doesn't support OIDC discovery
@@ -107,18 +110,37 @@ oidc:
   # OPTIONAL: Required OAuth2 scope (default: openid)
   # scope: "openid"
 
-  # OPTIONAL: Use existing Kubernetes Secret instead of ConfigMap
-  # If specified, the deployment will load OIDC config from this secret
-  # instead of creating a ConfigMap. Useful for external secret management.
-  # The secret must contain a YAML file with the OIDC configuration.
+  # NOTE: Auth0 credentials secret is automatically derived from release name
+  # Secret name will be: {{ .Release.Name }}-auth0-credentials
   #
-  # Example secret creation:
-  #   kubectl create secret generic my-oidc-secret \
-  #     --from-file=oidc.yaml=./oidc-config.yaml
+  # Create the secret using:
+  #   python bin/create_secrets.py --namespace <namespace> --release-name <release-name>
   #
-  # Or use the provided script with auth0-config.json:
-  #   python bin/create_secrets.py --namespace <namespace>
-  #
-  # existingSecret:
-  #   name: "my-oidc-secret"        # Name of the existing secret
-  #   configKey: "oidc.yaml"        # Key in secret containing YAML config (default: oidc.yaml)
+  # The secret must contain:
+  #   - server-client-id: Server client ID (for FastMCP)
+  #   - server-client-secret: Server client secret (for FastMCP)
+  #   - mgmt-client-id: Management API client ID (for scripts)
+  #   - mgmt-client-secret: Management API client secret (for scripts)
+  #   - auth0-domain: Auth0 domain
+  #   - connection-id: Auth0 connection ID
+
+# Test Sidecar Configuration
+# Enables a second container for testing using standard OIDC authentication
+testSidecar:
+  # Enable test sidecar container
+  enabled: false
+
+  # Image for test sidecar (defaults to main image)
+  image:
+    repository: ""  # Leave empty to use main image
+    tag: ""         # Leave empty to use main image tag
+    pullPolicy: ""  # Leave empty to use main image pullPolicy
+
+  # Resource limits for test sidecar
+  resources: {}
+    # limits:
+    #   cpu: 200m
+    #   memory: 256Mi
+    # requests:
+    #   cpu: 100m
+    #   memory: 128Mi

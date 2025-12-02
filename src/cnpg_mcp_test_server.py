@@ -1,20 +1,16 @@
 #!/usr/bin/env python3
 """
-CloudNativePG MCP Server (FastMCP OAuth)
+CloudNativePG MCP Test Server (OIDC Auth)
 
-Main MCP server for CloudNativePG management using FastMCP's OAuth proxy.
-This server issues MCP tokens after Auth0 authentication.
+Test endpoint for the CloudNativePG MCP server using standard OIDC authentication.
+This server accepts Auth0 JWT tokens directly (no MCP token issuance).
 
-This runs as the primary container in a sidecar deployment alongside the
-test server:
+This is deployed as a sidecar container alongside the main FastMCP OAuth server,
+allowing both authentication methods to coexist:
 - Main server (port 3000): FastMCP OAuth proxy issuing MCP tokens
 - Test server (port 3001): Standard OIDC accepting Auth0 JWT tokens
 
 Both servers share the same 12 tool implementations from cnpg_tools.py.
-
-Transport Modes:
-- stdio: Communication over stdin/stdout (default, for Claude Desktop)
-- http: HTTP server with OAuth for remote access
 """
 
 import argparse
@@ -24,6 +20,7 @@ import os
 
 from fastmcp import FastMCP
 import uvicorn
+from starlette.middleware import Middleware
 from starlette.routing import Route
 from starlette.responses import JSONResponse
 
@@ -43,6 +40,9 @@ from cnpg_tools import (
     delete_postgres_database,
 )
 
+# Import OIDC auth
+from auth_oidc import OIDCAuthProvider, OIDCAuthMiddleware
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -59,14 +59,14 @@ logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 # FastMCP Server Initialization
 # ============================================================================
 
-mcp = FastMCP("cloudnative-pg")
+mcp = FastMCP("cloudnative-pg-test")
 
 # ============================================================================
 # Register Tools
 # ============================================================================
 
 # Register all 12 tools by decorating the imported functions
-# These are the same tool implementations used by the test server
+# These are the same tool implementations used by the main server
 
 @mcp.tool(name="list_postgres_clusters")
 async def list_postgres_clusters_tool(
@@ -222,7 +222,7 @@ async def delete_postgres_database_tool(
     return await delete_postgres_database(cluster_name, database_name, namespace, confirm)
 
 
-logger.info("Registered 12 tools with main MCP server")
+logger.info("✅ Registered 12 tools with test MCP server")
 
 # ============================================================================
 # Health Check Endpoints
@@ -239,120 +239,74 @@ async def readiness_check(request):
 
 
 # ============================================================================
-# Transport Implementations
+# Main Entry Point
 # ============================================================================
 
-async def run_stdio_transport():
-    """Run server in stdio mode (for Claude Desktop)."""
+def main():
+    """Main entry point for the test server."""
+    parser = argparse.ArgumentParser(
+        description="CloudNativePG MCP Test Server (OIDC Auth)"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.getenv("PORT", "3001")),
+        help="Port to listen on (default: 3001)"
+    )
+    parser.add_argument(
+        "--host",
+        default="0.0.0.0",
+        help="Host to bind to (default: 0.0.0.0)"
+    )
+
+    args = parser.parse_args()
+
     logger.info("=" * 70)
-    logger.info("CloudNativePG MCP Server (stdio mode)")
+    logger.info("CloudNativePG MCP Test Server (OIDC Auth)")
     logger.info("=" * 70)
+    logger.info(f"Listening on: {args.host}:{args.port}")
+    logger.info(f"Endpoint: /test")
+    logger.info(f"Auth: Standard OIDC (Auth0 JWT tokens)")
     logger.info("Tools: 12 CloudNativePG management tools")
     logger.info("=" * 70)
 
-    # Run stdio transport
-    await mcp.run_stdio_async()
+    # Create OIDC auth provider
+    logger.info("🔐 Initializing OIDC authentication...")
+    oidc_provider = OIDCAuthProvider()
+    logger.info(f"   Issuer: {oidc_provider.issuer}")
+    logger.info(f"   Audience: {oidc_provider.audience}")
 
+    # Create FastMCP HTTP app
+    app = mcp.http_app(transport="http", path="/test")
 
-def run_http_transport(host: str, port: int):
-    """Run server in HTTP mode with FastMCP OAuth."""
-    from auth_fastmcp import create_auth0_oauth_proxy, get_auth_config_summary, load_oidc_config_from_file
-
-    logger.info("Initializing FastMCP OAuth Proxy for Auth0...")
-
-    # Load configuration
-    config = load_oidc_config_from_file() or {}
-    issuer = config.get("issuer") or os.getenv("OIDC_ISSUER") or ""
-    audience = config.get("audience") or os.getenv("OIDC_AUDIENCE") or ""
-    client_id = config.get("client_id") or os.getenv("AUTH0_CLIENT_ID") or ""
-    public_url = config.get("public_url") or os.getenv("PUBLIC_URL") or ""
-
-    # Create OAuth Proxy (handles token issuance)
-    auth_proxy = create_auth0_oauth_proxy()
-
-    # Log configuration summary
-    config_summary = get_auth_config_summary(issuer, audience, client_id, public_url)
-    logger.info("=" * 80)
-    logger.info("FastMCP OAuth Configuration:")
-    logger.info("=" * 80)
-    for key, value in config_summary.items():
-        logger.info(f"  {key}: {value}")
-    logger.info("=" * 80)
-
-    # Set OAuth on mcp instance
-    mcp.auth = auth_proxy
-
-    # Create app with OAuth at /mcp endpoint
-    app = mcp.http_app(transport="http", path="/mcp")
+    # Add OIDC middleware
+    logger.info("🔒 Adding OIDC authentication middleware...")
+    app.add_middleware(
+        OIDCAuthMiddleware,
+        auth_provider=oidc_provider,
+        exclude_paths=["/healthz", "/readyz"]
+    )
 
     # Add health check routes
     app.add_route("/healthz", liveness_check)
     app.add_route("/readyz", readiness_check)
 
+    logger.info("✅ Test server ready")
     logger.info("")
-    logger.info("=" * 80)
-    logger.info("Server Configuration:")
-    logger.info("=" * 80)
-    logger.info(f"  Listening on: {host}:{port}")
-    logger.info(f"  MCP Endpoint: /mcp")
-    logger.info(f"  Auth: FastMCP OAuth Proxy (issues MCP tokens)")
-    logger.info("  Tools: 12 CloudNativePG management tools")
-    logger.info(f"  OAuth Discovery: /.well-known/oauth-authorization-server")
-    logger.info(f"  Client Registration: /register")
-    logger.info("=" * 80)
-    logger.info("")
-    logger.info("To get an MCP token:")
-    logger.info(f"  ./test/get-mcp-token.py --url http://{host}:{port}")
-    logger.info("")
-    logger.info("To test with MCP token:")
-    logger.info("  ./test/test-mcp.py --transport http \\")
-    logger.info(f"    --url http://{host}:{port}/mcp \\")
-    logger.info("    --token-file /tmp/mcp-token.txt")
+    logger.info("To test with Auth0 JWT token:")
+    logger.info("  1. Get token: ./test/get-user-token.py")
+    logger.info("  2. Test: ./test/test-mcp.py --transport http \\")
+    logger.info(f"           --url http://localhost:{args.port}/test \\")
+    logger.info("           --token-file /tmp/user-token.txt")
     logger.info("")
 
     # Run server
     uvicorn.run(
         app,
-        host=host,
-        port=port,
+        host=args.host,
+        port=args.port,
         log_level="info"
     )
-
-
-# ============================================================================
-# Main Entry Point
-# ============================================================================
-
-def main():
-    """Main entry point with transport selection."""
-    parser = argparse.ArgumentParser(
-        description="CloudNativePG MCP Server"
-    )
-    parser.add_argument(
-        "--transport",
-        choices=["stdio", "http"],
-        default="stdio",
-        help="Transport mode: stdio (default) or http"
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=int(os.getenv("PORT", "3000")),
-        help="Port for HTTP transport (default: 3000)"
-    )
-    parser.add_argument(
-        "--host",
-        default="0.0.0.0",
-        help="Host for HTTP transport (default: 0.0.0.0)"
-    )
-
-    args = parser.parse_args()
-
-    if args.transport == "stdio":
-        import asyncio
-        asyncio.run(run_stdio_transport())
-    else:
-        run_http_transport(args.host, args.port)
 
 
 if __name__ == "__main__":
