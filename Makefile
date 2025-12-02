@@ -11,14 +11,16 @@ all: config build
 # Default values (overridden by make.env)
 REGISTRY ?= ghcr.io/your-org
 IMAGE_NAME ?= cnpg-mcp-server
+IMAGE_NAME_TEST ?= cnpg-mcp-test-server
 TAG ?= latest
 PLATFORM ?= linux/amd64
 CONTAINER_TOOL ?= docker
 HELM_RELEASE ?= cnpg-mcp
 HELM_NAMESPACE ?= default
 
-# Derived values - construct full image name from REGISTRY and IMAGE_NAME
+# Derived values - construct full image names from REGISTRY and IMAGE_NAME
 IMAGE_FULL := $(REGISTRY)/$(IMAGE_NAME):$(TAG)
+IMAGE_FULL_TEST := $(REGISTRY)/$(IMAGE_NAME_TEST):$(TAG)
 
 #
 # Configuration targets
@@ -35,14 +37,16 @@ make.env:
 .PHONY: config-show
 config-show: make.env ## Show current configuration
 	@echo "Current Configuration:"
-	@echo "  REGISTRY:      $(REGISTRY)"
-	@echo "  IMAGE_NAME:    $(IMAGE_NAME)"
-	@echo "  TAG:           $(TAG)"
-	@echo "  IMAGE_FULL:    $(IMAGE_FULL)"
-	@echo "  PLATFORM:      $(PLATFORM)"
-	@echo "  CONTAINER_TOOL: $(CONTAINER_TOOL)"
-	@echo "  HELM_RELEASE:  $(HELM_RELEASE)"
-	@echo "  HELM_NAMESPACE: $(HELM_NAMESPACE)"
+	@echo "  REGISTRY:         $(REGISTRY)"
+	@echo "  IMAGE_NAME:       $(IMAGE_NAME)"
+	@echo "  IMAGE_NAME_TEST:  $(IMAGE_NAME_TEST)"
+	@echo "  TAG:              $(TAG)"
+	@echo "  IMAGE_FULL:       $(IMAGE_FULL)"
+	@echo "  IMAGE_FULL_TEST:  $(IMAGE_FULL_TEST)"
+	@echo "  PLATFORM:         $(PLATFORM)"
+	@echo "  CONTAINER_TOOL:   $(CONTAINER_TOOL)"
+	@echo "  HELM_RELEASE:     $(HELM_RELEASE)"
+	@echo "  HELM_NAMESPACE:   $(HELM_NAMESPACE)"
 
 #
 # Container build targets
@@ -74,8 +78,40 @@ push: make.env ## Push container image to registry
 .PHONY: build-push
 build-push: build push ## Build and push container image
 
+.PHONY: build-test
+build-test: make.env ## Build test server container image
+	@echo "Building test server image: $(IMAGE_FULL_TEST)"
+	$(CONTAINER_TOOL) build --tag $(IMAGE_FULL_TEST) --platform $(PLATFORM) --file Dockerfile.test .
+	@echo "✓ Built: $(IMAGE_FULL_TEST)"
+
+.PHONY: build-test-no-cache
+build-test-no-cache: make.env ## Build test server image without cache
+	@echo "Building test server image (no cache): $(IMAGE_FULL_TEST)"
+	$(CONTAINER_TOOL) build \
+		--no-cache \
+		--tag $(IMAGE_FULL_TEST) \
+		--platform $(PLATFORM) \
+		--file Dockerfile.test \
+		.
+	@echo "✓ Built: $(IMAGE_FULL_TEST)"
+
+.PHONY: build-both
+build-both: build build-test ## Build both main and test server images
+
+.PHONY: push-test
+push-test: make.env ## Push test server image to registry
+	@echo "Pushing test server image: $(IMAGE_FULL_TEST)"
+	$(CONTAINER_TOOL) push $(IMAGE_FULL_TEST)
+	@echo "✓ Pushed: $(IMAGE_FULL_TEST)"
+
+.PHONY: push-both
+push-both: push push-test ## Push both main and test server images
+
+.PHONY: build-push-both
+build-push-both: build-both push-both ## Build and push both images
+
 .PHONY: test-image
-test-image: make.env ## Test container image locally
+test-image: make.env ## Test main server image locally
 	@echo "Testing container image: $(IMAGE_FULL)"
 	@echo "Starting container in HTTP mode (insecure - no OIDC)..."
 	@echo "Press Ctrl+C to stop"
@@ -83,6 +119,16 @@ test-image: make.env ## Test container image locally
 		-p 4204:4204 \
 		--name cnpg-mcp-test \
 		$(IMAGE_FULL)
+
+.PHONY: test-image-test
+test-image-test: make.env ## Test test server image locally
+	@echo "Testing test server image: $(IMAGE_FULL_TEST)"
+	@echo "Starting test server container..."
+	@echo "Press Ctrl+C to stop"
+	$(CONTAINER_TOOL) run --rm -it \
+		-p 3001:3001 \
+		--name cnpg-mcp-test-sidecar \
+		$(IMAGE_FULL_TEST)
 
 #
 # Helm chart targets
@@ -212,7 +258,7 @@ help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | grep -E '^(config|config-show):' | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 	@echo ""
 	@echo "Container Build:"
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | grep -E '^(build|push|build-push|build-no-cache|test-image):' | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | grep -E '^(build|build-test|build-both|build-no-cache|build-test-no-cache|push|push-test|push-both|build-push|build-push-both|test-image|test-image-test):' | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 	@echo ""
 	@echo "Helm Chart:"
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | grep -E '^helm-' | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'

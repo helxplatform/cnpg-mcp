@@ -111,102 +111,21 @@ def load_auth0_config(config_path: str = "auth0-config.json") -> Optional[Dict[s
 
 def get_token_from_auth0(config: Dict[str, Any]) -> Optional[str]:
     """
-    Attempt to get an access token using management API credentials.
+    Get an access token using user authentication (Authorization Code + PKCE).
+
+    This simulates the same flow that Claude Desktop uses when connecting to the MCP server.
+    No M2M (client_credentials) flow is used as the MCP server is designed for user authentication.
 
     Args:
-        config: Auth0 configuration dictionary
+        config: Auth0 configuration dictionary (not actually used, just for API compatibility)
 
     Returns:
         Access token or None if failed
     """
-    try:
-        import requests
-    except ImportError:
-        print(Colors.yellow("Warning: 'requests' library not installed"))
-        print("Install with: pip install requests")
-        return None
-
-    domain = config.get('domain')
-    audience = config.get('audience')
-
-    # Prefer test_client credentials over management_api credentials
-    test_client = config.get('test_client', {})
-    client_id = test_client.get('client_id')
-    client_secret = test_client.get('client_secret')
-
-    # Fallback to management_api (legacy)
-    if not client_id or not client_secret:
-        print(Colors.yellow("No test_client found, trying management_api (legacy)..."))
-        mgmt_api = config.get('management_api', {})
-        client_id = mgmt_api.get('client_id')
-        client_secret = mgmt_api.get('client_secret')
-
-    if not all([domain, audience, client_id, client_secret]):
-        print(Colors.yellow("Warning: Incomplete Auth0 configuration"))
-        print("  Missing one or more of: domain, audience, client_id, client_secret")
-        print()
-        print("To fix this, run:")
-        print("  python bin/setup-auth0.py --token YOUR_AUTH0_TOKEN --recreate-client")
-        return None
-
-    print(Colors.blue("Attempting to obtain token from Auth0..."))
-    print(f"  Domain: {domain}")
-    print(f"  Audience: {audience}")
-    print(f"  Client ID: {client_id[:20]}...")
-
-    # Try to get token using management client credentials
-    token_url = f"https://{domain}/oauth/token"
-
-    try:
-        response = requests.post(
-            token_url,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            data={
-                "grant_type": "client_credentials",
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "audience": audience,
-                "scope": "openid mcp:read mcp:write"
-            },
-            timeout=10
-        )
-
-        if response.status_code == 200:
-            token_data = response.json()
-            token = token_data.get('access_token')
-
-            if token:
-                print(Colors.green("✅ Successfully obtained token from Auth0"))
-                print(f"  Token expires in: {token_data.get('expires_in', 'unknown')} seconds")
-                return token
-            else:
-                print(Colors.red("❌ No access_token in response"))
-                return None
-        else:
-            print(Colors.red(f"❌ Failed to get token (HTTP {response.status_code})"))
-            try:
-                error_data = response.json()
-                error = error_data.get('error', 'unknown')
-                error_desc = error_data.get('error_description', 'No description')
-                print(f"  Error: {error}")
-                print(f"  Description: {error_desc}")
-
-                if error == 'access_denied' or 'not authorized' in error_desc.lower():
-                    print()
-                    print(Colors.yellow("The client is not authorized for the MCP API."))
-                    print("This usually means the auth0-config.json is outdated.")
-                    print()
-                    print("To fix this, re-run the setup script:")
-                    print(f"  python bin/setup-auth0.py --token YOUR_AUTH0_TOKEN --recreate-client")
-                    print()
-                    print("This will create a new test client with proper authorization.")
-            except:
-                print(f"  Response: {response.text[:200]}")
-            return None
-
-    except requests.exceptions.RequestException as e:
-        print(Colors.red(f"❌ Network error: {e}"))
-        return None
+    # User authentication is required - same flow as Claude Desktop
+    print(Colors.blue("Using user authentication (same as Claude Desktop)"))
+    print()
+    return get_user_token_interactive()
 
 
 def topological_sort_plugins(plugins: List) -> List:
@@ -404,19 +323,11 @@ async def run_automated_tests(transport: str, url: str = None, token: str = None
                 auth_token = get_token_from_auth0(auth0_config)
 
                 if auth_token:
-                    token_source = f"auto-obtained from {auth0_config_path}"
+                    token_source = "user authentication (Authorization Code Flow)"
                 else:
-                    # Try user authentication as fallback
-                    print(Colors.yellow("⚠️  Client credentials failed, trying user authentication..."))
                     print()
-                    auth_token = get_user_token_interactive()
-
-                    if auth_token:
-                        token_source = "user authentication (Authorization Code Flow)"
-                    else:
-                        print()
-                        print(Colors.red("❌ Failed to obtain authentication token"))
-                        return 1
+                    print(Colors.red("❌ Failed to obtain authentication token"))
+                    return 1
             else:
                 print(Colors.yellow(f"⚠️  No {auth0_config_path} found"))
                 print("   Attempting connection without authentication...")
@@ -431,7 +342,15 @@ async def run_automated_tests(transport: str, url: str = None, token: str = None
             from mcp.client.session import ClientSession
 
             # Construct MCP endpoint URL
-            mcp_url = f"{url}/mcp" if not url.endswith('/mcp') else url
+            # Use /test endpoint for Auth0 tokens (standard OIDC)
+            # Use /mcp endpoint for FastMCP tokens (OAuth proxy)
+            if auth_token and not url.endswith(('/mcp', '/mcp/', '/test', '/test/')):
+                # Auth0 token → use /test/ endpoint (trailing slash required by Starlette Mount)
+                mcp_url = f"{url}/test/"
+                print(Colors.blue("Using /test/ endpoint (Auth0 token with standard OIDC)"))
+            else:
+                # Default to /mcp for FastMCP OAuth flow
+                mcp_url = f"{url}/mcp" if not url.endswith(('/mcp', '/mcp/', '/test', '/test/')) else url
 
             # Prepare headers
             headers = {}
@@ -840,20 +759,13 @@ Notes:
             print()
             token = get_token_from_auth0(auth0_config)
             if token:
-                token_source = f"auto-obtained from {args.auth0_config} (client credentials)"
+                token_source = "user authentication (Authorization Code Flow)"
             else:
-                # If using proxy (which requires token), try user authentication
+                print()
+                print(Colors.red("❌ Failed to obtain token via user authentication"))
+                # If using proxy mode, token is required
                 if args.use_proxy:
-                    print(Colors.yellow("⚠️  Client credentials failed (likely missing 'openid' scope)"))
-                    print()
-                    print("Attempting user authentication instead...")
-                    token = get_user_token_interactive()
-                    if token:
-                        token_source = "user authentication (Authorization Code Flow)"
-                    else:
-                        print()
-                        print(Colors.red("❌ Failed to obtain token via user authentication"))
-                        sys.exit(1)
+                    sys.exit(1)
                 else:
                     print()
                     print(Colors.yellow("⚠️  Could not automatically obtain token"))

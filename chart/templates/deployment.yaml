@@ -76,6 +76,57 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
 
+{{- if .Values.testSidecar.enabled }}
+        # Test sidecar container using OIDC authentication
+        - name: {{ .Chart.Name }}-test
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.testSidecar.image.repository | default .Values.image.repository }}:{{ .Values.testSidecar.image.tag | default (.Values.image.tag | default (printf "v%s" .Chart.AppVersion)) }}"
+          imagePullPolicy: {{ .Values.testSidecar.image.pullPolicy | default .Values.image.pullPolicy }}
+          command: ["python", "cnpg_mcp_test_server.py"]
+          args: ["--port", "{{ .Values.service.testPort }}"]
+          ports:
+            - name: http-test
+              containerPort: {{ .Values.service.testPort }}
+              protocol: TCP
+
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+
+          # Mount OIDC configuration as volume (shared with main container)
+          volumeMounts:
+            - name: oidc-config
+              mountPath: /etc/mcp
+              readOnly: true
+            - name: auth0-credentials
+              mountPath: /etc/mcp/secrets
+              readOnly: true
+
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http-test
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http-test
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          resources:
+            {{- toYaml .Values.testSidecar.resources | nindent 12 }}
+{{- end }}
+
       # Define volumes for OIDC configuration
       volumes:
         # Always use ConfigMap for OIDC config (non-sensitive)
