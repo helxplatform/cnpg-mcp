@@ -94,12 +94,16 @@ async def create_postgres_cluster_tool(
     instances: int = 3,
     storage_size: str = "1Gi",
     postgres_version: str = "16",
+    storage_class: str = None,
+    wait: bool = False,
+    timeout: int = None,
     namespace: str = None,
     dry_run: bool = False
 ):
     """Create a new PostgreSQL cluster with high availability configuration."""
     return await create_postgres_cluster(
-        name, instances, storage_size, postgres_version, namespace, dry_run
+        name, instances, storage_size, postgres_version, storage_class,
+        wait, timeout, namespace, dry_run
     )
 
 

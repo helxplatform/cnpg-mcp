@@ -180,6 +180,62 @@ def get_current_namespace() -> str:
 # Utility Functions
 # ============================================================================
 
+def validate_rfc1123_name(name: str, resource_type: str = "resource") -> None:
+    """
+    Validate that a name conforms to RFC 1123 DNS label standard.
+
+    RFC 1123 requirements for Kubernetes resource names:
+    - Must be 63 characters or less
+    - Must contain only lowercase alphanumeric characters or '-'
+    - Must start with an alphanumeric character
+    - Must end with an alphanumeric character
+
+    Args:
+        name: The name to validate
+        resource_type: Type of resource (for error messages)
+
+    Raises:
+        ValueError: If the name doesn't conform to RFC 1123
+    """
+    if not name:
+        raise ValueError(f"{resource_type} name cannot be empty")
+
+    if len(name) > 63:
+        raise ValueError(
+            f"{resource_type} name '{name}' is too long ({len(name)} characters). "
+            f"RFC 1123 DNS labels must be 63 characters or less."
+        )
+
+    # Check pattern: lowercase alphanumeric or '-', must start and end with alphanumeric
+    import re
+    if not re.match(r'^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', name):
+        issues = []
+
+        if name[0] not in 'abcdefghijklmnopqrstuvwxyz0123456789':
+            issues.append("must start with a lowercase letter or number")
+
+        if len(name) > 1 and name[-1] not in 'abcdefghijklmnopqrstuvwxyz0123456789':
+            issues.append("must end with a lowercase letter or number")
+
+        invalid_chars = set(c for c in name if c not in 'abcdefghijklmnopqrstuvwxyz0123456789-')
+        if invalid_chars:
+            issues.append(f"contains invalid characters: {', '.join(sorted(invalid_chars))}")
+
+        if not any(c.islower() and c.isalpha() for c in name) and not any(c.isupper() for c in name):
+            # Check if there are uppercase letters
+            pass
+        elif any(c.isupper() for c in name):
+            issues.append("must be lowercase (uppercase letters are not allowed)")
+
+        raise ValueError(
+            f"{resource_type} name '{name}' is invalid. RFC 1123 DNS label requirements:\n"
+            f"  - Must contain only lowercase letters (a-z), numbers (0-9), and hyphens (-)\n"
+            f"  - Must start and end with a letter or number\n"
+            f"  - Must be 63 characters or less\n\n"
+            f"Issues found: {'; '.join(issues)}"
+        )
+
+
 def truncate_response(content: str, max_length: int = CHARACTER_LIMIT) -> str:
     """Truncate response content to stay within character limits."""
     if len(content) <= max_length:
@@ -351,9 +407,10 @@ class CreateClusterInput(BaseModel):
     """Input for creating a new PostgreSQL cluster."""
     name: str = Field(
         ...,
-        description="Name for the new cluster. Must be a valid Kubernetes resource name.",
-        examples=["my-postgres-cluster", "production-db"],
-        pattern=r'^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+        description="Name for the new cluster. Must conform to RFC 1123 DNS label standard: lowercase letters (a-z), numbers (0-9), and hyphens (-) only; must start and end with a letter or number; max 63 characters.",
+        examples=["my-postgres-cluster", "production-db", "app-db-01"],
+        pattern=r'^[a-z0-9]([-a-z0-9]*[a-z0-9])?$',
+        max_length=63
     )
     instances: int = Field(
         3,
@@ -450,8 +507,10 @@ class CreateRoleInput(BaseModel):
     cluster_name: str = Field(..., description="Name of the PostgreSQL cluster.")
     role_name: str = Field(
         ...,
-        description="Name of the role to create.",
-        pattern=r'^[a-z_][a-z0-9_]*$'
+        description="Name of the role to create. Must conform to RFC 1123 DNS label standard (required for Kubernetes secret naming): lowercase letters (a-z), numbers (0-9), and hyphens (-) only; must start and end with a letter or number; max 63 characters.",
+        examples=["app-user", "readonly-user", "admin-01"],
+        pattern=r'^[a-z0-9]([-a-z0-9]*[a-z0-9])?$',
+        max_length=63
     )
     login: bool = Field(True, description="Allow role to log in. Default: true.")
     superuser: bool = Field(False, description="Grant superuser privileges. Default: false.")
@@ -518,8 +577,10 @@ class CreateDatabaseInput(BaseModel):
     cluster_name: str = Field(..., description="Name of the PostgreSQL cluster.")
     database_name: str = Field(
         ...,
-        description="Name of the database to create.",
-        pattern=r'^[a-z_][a-z0-9_]*$'
+        description="Name of the database to create. Must conform to RFC 1123 DNS label standard (required for Database CRD naming): lowercase letters (a-z), numbers (0-9), and hyphens (-) only; must start and end with a letter or number; max 63 characters.",
+        examples=["app-db", "analytics-db", "user-data"],
+        pattern=r'^[a-z0-9]([-a-z0-9]*[a-z0-9])?$',
+        max_length=63
     )
     owner: str = Field(..., description="Name of the role that will own the database.")
     reclaim_policy: Literal["retain", "delete"] = Field(
@@ -816,6 +877,9 @@ async def create_postgres_cluster(
         monitor the cluster until it reaches 'Cluster in healthy state' phase.
     """
     try:
+        # Validate cluster name conforms to RFC 1123
+        validate_rfc1123_name(name, "Cluster")
+
         # Infer namespace from context if not provided
         if namespace is None:
             namespace = get_current_namespace()
@@ -1379,6 +1443,9 @@ async def create_postgres_role(
         If dry_run=True, returns a preview of the role definition.
     """
     try:
+        # Validate role name conforms to RFC 1123 (required for Kubernetes secret naming)
+        validate_rfc1123_name(role_name, "Role")
+
         if namespace is None:
             namespace = get_current_namespace()
 
@@ -1439,6 +1506,10 @@ To create this role, call create_postgres_role again with dry_run=False (or omit
 
         # Create Kubernetes secret to store the password
         secret_name = f"cnpg-{cluster_name}-user-{role_name}"
+
+        # Validate the resulting secret name conforms to RFC 1123
+        validate_rfc1123_name(secret_name, "Role secret")
+
         _, core_api = get_kubernetes_clients()
 
         secret_data = {
@@ -1908,11 +1979,17 @@ async def create_postgres_database(
         If dry_run=True, returns a preview of the Database CRD definition.
     """
     try:
+        # Validate database name conforms to RFC 1123 (required for Database CRD naming)
+        validate_rfc1123_name(database_name, "Database")
+
         if namespace is None:
             namespace = get_current_namespace()
 
         # Create a unique CRD name (cluster-database)
         crd_name = f"{cluster_name}-{database_name}"
+
+        # Validate the resulting CRD name also conforms to RFC 1123
+        validate_rfc1123_name(crd_name, "Database CRD")
 
         # Build the Database CRD
         database_crd = {
