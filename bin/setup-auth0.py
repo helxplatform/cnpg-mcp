@@ -1076,6 +1076,14 @@ securityContext:
   capabilities:
     drop:
     - ALL
+
+# Test Sidecar Configuration
+# Enables a second container for testing using standard OIDC authentication
+testSidecar:
+  enabled: true
+  repository: {image_repo}-test-server
+  pullPolicy: {pull_policy}  {pull_policy_comment}
+  tag: "{image_tag}"  # From make.env (leave empty to use Chart.AppVersion)
 """
 
     helm_file = os.path.join(output_dir, "auth0-values.yaml")

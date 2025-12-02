@@ -1,7 +1,6 @@
 *.swp
 *.swo
 .vscode
-docs
 nohup.out
 output
 *~
