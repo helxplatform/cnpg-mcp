@@ -162,29 +162,34 @@ def extract_user_info_from_request(request: Any) -> Optional[Dict[str, str]]:
     """
     try:
         # Try request.user first (common Starlette pattern)
-        user = getattr(request, 'user', None)
-        if user and hasattr(user, 'claims'):
-            claims = user.claims
-        elif user and isinstance(user, dict):
-            claims = user
-        # Try request.state.user
-        elif hasattr(request, 'state') and hasattr(request.state, 'user'):
+        # Note: request.user is a property that may raise if AuthenticationMiddleware not installed
+        user = None
+        claims = None
+        try:
+            user = request.user
+            if user and hasattr(user, 'claims'):
+                claims = user.claims
+            elif user and isinstance(user, dict):
+                claims = user
+        except (AttributeError, RuntimeError, AssertionError):
+            # AuthenticationMiddleware not installed or request.user not available
+            # Starlette raises AssertionError: "AuthenticationMiddleware must be installed..."
+            pass
+
+        # Try request.state.user if we didn't find claims yet
+        if not claims and hasattr(request, 'state') and hasattr(request.state, 'user'):
             user = request.state.user
             if hasattr(user, 'claims'):
                 claims = user.claims
             elif isinstance(user, dict):
                 claims = user
-            else:
-                claims = None
-        # Try request.state.claims
-        elif hasattr(request, 'state') and hasattr(request.state, 'claims'):
+
+        # Try request.state.claims if still no claims
+        if not claims and hasattr(request, 'state') and hasattr(request.state, 'claims'):
             claims = request.state.claims
-        else:
-            logger.debug("No user claims found in request")
-            return None
 
         if not claims:
-            logger.debug("Claims object is empty")
+            logger.debug("No user claims found in request")
             return None
 
         # Extract preferred_username (try multiple claim names)

@@ -28,6 +28,11 @@ from pydantic import BaseModel, Field
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 from fastmcp import Context as FastMCPContext
+try:
+    from fastmcp.server.dependencies import get_http_request
+except ImportError:
+    # Fallback for older FastMCP versions
+    get_http_request = None
 
 # Import user identification utilities
 from user_hash import extract_user_info_from_request, generate_user_id
@@ -71,7 +76,12 @@ class MCPContext:
     def _extract_user_info(self) -> None:
         """Extract user information from the HTTP request."""
         try:
-            request = self.ctx.get_http_request()
+            # Use new API if available, fallback to deprecated method
+            if get_http_request is not None:
+                request = get_http_request()
+            else:
+                request = self.ctx.get_http_request()
+
             user_info = extract_user_info_from_request(request)
 
             if user_info:
@@ -156,10 +166,15 @@ def with_mcp_context(func):
 # Logging Configuration
 # ============================================================================
 
-# Suppress deprecation warnings from uvicorn's websocket dependencies
-# These are not from our code and will be fixed when uvicorn updates
+# Suppress deprecation warnings from dependencies
+# These are not from our code and will be fixed when dependencies update
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="websockets")
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="uvicorn.protocols.websockets")
+
+# Suppress urllib3 deprecation warning (used by kubernetes client)
+# Warning: HTTPResponse.getheaders() is deprecated in urllib3 v2.1.0
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="urllib3")
+warnings.filterwarnings("ignore", message=".*HTTPResponse.getheaders.*")
 
 # Configure logging
 logging.basicConfig(

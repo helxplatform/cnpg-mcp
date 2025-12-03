@@ -33,6 +33,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY src/cnpg_mcp_server.py .
 COPY src/cnpg_mcp_test_server.py .
 COPY src/cnpg_tools.py .
+COPY src/user_hash.py .
 COPY src/auth_oidc.py .
 COPY src/auth_fastmcp.py .
 
