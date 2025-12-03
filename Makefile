@@ -95,8 +95,8 @@ build-test-no-cache: make.env ## Build test server image without cache
 		.
 	@echo "✓ Built: $(IMAGE_FULL_TEST)"
 
-.PHONY: build-both
-build-both: build build-test ## Build both main and test server images
+.PHONY: build-all
+build-all: build build-test ## Build both main and test server images
 
 .PHONY: push-test
 push-test: make.env ## Push test server image to registry
@@ -104,11 +104,8 @@ push-test: make.env ## Push test server image to registry
 	$(CONTAINER_TOOL) push $(IMAGE_FULL_TEST)
 	@echo "✓ Pushed: $(IMAGE_FULL_TEST)"
 
-.PHONY: push-both
-push-both: push push-test ## Push both main and test server images
-
-.PHONY: build-push-both
-build-push-both: build-both push-both ## Build and push both images
+.PHONY: push-all
+push-all: build-all push push-test ## Push both main and test server images
 
 .PHONY: test-image
 test-image: make.env ## Test main server image locally
@@ -258,7 +255,7 @@ help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | grep -E '^(config|config-show):' | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 	@echo ""
 	@echo "Container Build:"
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | grep -E '^(build|build-test|build-both|build-no-cache|build-test-no-cache|push|push-test|push-both|build-push|build-push-both|test-image|test-image-test):' | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | grep -E '^(build|build-test|build-all|build-no-cache|build-test-no-cache|push|push-test|push-all|build-push||test-image|test-image-test):' | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 	@echo ""
 	@echo "Helm Chart:"
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | grep -E '^helm-' | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'

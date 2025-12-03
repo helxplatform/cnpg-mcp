@@ -167,7 +167,56 @@ class Auth0MCPSetup:
                 if e.response is not None:
                     print(f"Response: {e.response.text}")
             raise
-    
+
+    def validate_token(self) -> bool:
+        """
+        Validate that the access token is valid and not expired.
+        Makes a simple API call to check token validity.
+        Raises an exception with a clear message if token is invalid/expired.
+        """
+        try:
+            # Make a simple GET request to verify token
+            self._make_request("GET", "/clients", params={"per_page": 1}, silent_errors=True)
+            return True
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code == 401:
+                error_body = {}
+                try:
+                    error_body = e.response.json()
+                except:
+                    pass
+
+                error_msg = error_body.get('message', 'Unauthorized')
+
+                # Check if it's an expired token
+                if 'expired' in error_msg.lower():
+                    print("\n" + "=" * 70)
+                    print("❌ TOKEN EXPIRED")
+                    print("=" * 70)
+                    print(f"Error: {error_msg}")
+                    print("\nYour Auth0 management API token has expired.")
+                    print("\nTo fix this:")
+                    print("  1. Generate a new token at:")
+                    print(f"     https://{self.domain}/dashboard/settings/tenant")
+                    print("  2. Rerun this script with --token YOUR_NEW_TOKEN")
+                    print("\nAlternatively, run without --token to auto-generate one.")
+                    print("=" * 70)
+                else:
+                    print("\n" + "=" * 70)
+                    print("❌ AUTHENTICATION FAILED")
+                    print("=" * 70)
+                    print(f"Error: {error_msg}")
+                    print("\nYour Auth0 management API token is invalid or lacks required permissions.")
+                    print("\nTo fix this:")
+                    print("  1. Verify your token at:")
+                    print(f"     https://{self.domain}/dashboard/settings/tenant")
+                    print("  2. Ensure the token has 'read:clients' and 'create:clients' scopes")
+                    print("  3. Rerun this script with a valid token")
+                    print("=" * 70)
+
+                raise SystemExit(1)
+            raise
+
     def check_dcr_enabled(self) -> bool:
         """Check if DCR is already enabled."""
         print("\n🔍 Checking if DCR is already enabled...")
@@ -1303,6 +1352,11 @@ Examples:
     try:
         setup = Auth0MCPSetup(config['domain'], config['token'])
 
+        # Validate token before proceeding
+        print("\n🔐 Validating Auth0 management token...")
+        setup.validate_token()
+        print("✅ Token is valid")
+
         # Try to enable DCR, but don't fail if we lack permissions (may already be enabled)
         # Only attempt DCR setup if --use-dcr flag is provided
         if args.use_dcr:
@@ -1410,6 +1464,9 @@ Examples:
                 'domain': config['domain'],
                 'issuer': f"https://{config['domain']}",
                 'audience': config['api_identifier'],
+                'api_identifier': config['api_identifier'],
+                'deployment_name': deployment_name,
+                'api_name': config['api_name'],
                 'connection_id': connection_id,
                 'dcr_enabled': args.use_dcr,
                 'connection_promoted': True

@@ -34,6 +34,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY src/cnpg_mcp_test_server.py .
 COPY src/cnpg_tools.py .
+COPY src/user_hash.py .
 COPY src/auth_oidc.py .
 
 # Create a non-root user for security

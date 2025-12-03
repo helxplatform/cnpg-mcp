@@ -27,11 +27,154 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
+from fastmcp import Context as FastMCPContext
+try:
+    from fastmcp.server.dependencies import get_http_request
+except ImportError:
+    # Fallback for older FastMCP versions
+    get_http_request = None
 
-# Suppress deprecation warnings from uvicorn's websocket dependencies
-# These are not from our code and will be fixed when uvicorn updates
+# Import user identification utilities
+from user_hash import extract_user_info_from_request, generate_user_id
+
+
+# ============================================================================
+# Custom Context with User Information
+# ============================================================================
+
+class MCPContext:
+    """
+    Extended MCP Context that includes user identification.
+
+    Wraps FastMCP's Context and adds user-specific information extracted
+    from JWT token claims (user_id, preferred_username, issuer).
+
+    Attributes:
+        ctx: The underlying FastMCP Context object
+        user_id: RFC 1123 compatible user identifier (username-hash)
+        preferred_username: User's preferred name from JWT token
+        issuer: Token issuer (iss claim)
+    """
+
+    def __init__(self, ctx: FastMCPContext):
+        """
+        Initialize MCPContext with user information.
+
+        Automatically extracts user info from the HTTP request if available.
+
+        Args:
+            ctx: FastMCP Context object
+        """
+        self.ctx = ctx
+        self.user_id: Optional[str] = None
+        self.preferred_username: Optional[str] = None
+        self.issuer: Optional[str] = None
+
+        # Extract user info from request
+        self._extract_user_info()
+
+    def _extract_user_info(self) -> None:
+        """Extract user information from the HTTP request."""
+        try:
+            # Use new API if available, fallback to deprecated method
+            if get_http_request is not None:
+                request = get_http_request()
+            else:
+                request = self.ctx.get_http_request()
+
+            user_info = extract_user_info_from_request(request)
+
+            if user_info:
+                self.user_id = user_info['user_id']
+                self.preferred_username = user_info['preferred_username']
+                self.issuer = user_info['issuer']
+                logger.debug(f"User authenticated: {self.user_id} ({self.preferred_username})")
+        except Exception as e:
+            # In stdio mode or other non-HTTP transports, this is expected
+            logger.debug(f"Could not extract user info (likely stdio mode): {e}")
+
+    def __getattr__(self, name: str) -> Any:
+        """
+        Delegate attribute access to the underlying FastMCP Context.
+
+        This allows MCPContext to be used as a drop-in replacement for Context,
+        providing access to all FastMCP Context methods like info(), debug(), etc.
+        """
+        return getattr(self.ctx, name)
+
+    def __repr__(self) -> str:
+        return f"MCPContext(user_id={self.user_id}, user={self.preferred_username})"
+
+
+def with_mcp_context(func):
+    """
+    Decorator that wraps FastMCP Context into MCPContext before calling the tool function.
+
+    This decorator should be applied to tool functions that expect MCPContext as their
+    first parameter. It intercepts the FastMCP Context that FastMCP automatically injects,
+    wraps it into MCPContext (which includes user_id), and passes it to the tool.
+
+    Usage:
+        @with_mcp_context
+        async def my_tool(context: MCPContext, param1: str) -> str:
+            # context.user_id is available here
+            return f"User {context.user_id} called with {param1}"
+
+    This allows all user identification logic to be in one place rather than
+    duplicated in every tool function.
+    """
+    import functools
+    import inspect
+
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        # Get function signature to find the context parameter
+        sig = inspect.signature(func)
+        params = list(sig.parameters.keys())
+
+        # Find FastMCPContext in args or kwargs
+        fastmcp_ctx = None
+
+        # Check if first parameter is annotated as FastMCPContext or is a Context instance
+        if args and len(args) > 0:
+            if isinstance(args[0], FastMCPContext):
+                fastmcp_ctx = args[0]
+                args = args[1:]  # Remove it from args
+
+        # Check kwargs for 'ctx' or 'context'
+        if not fastmcp_ctx:
+            for key in ['ctx', 'context']:
+                if key in kwargs:
+                    if isinstance(kwargs[key], FastMCPContext):
+                        fastmcp_ctx = kwargs.pop(key)
+                        break
+
+        # Wrap FastMCP Context into MCPContext
+        if fastmcp_ctx:
+            mcp_context = MCPContext(fastmcp_ctx)
+            # Pass MCPContext as first positional argument
+            return await func(mcp_context, *args, **kwargs)
+        else:
+            # No context found - shouldn't happen with FastMCP tools, but handle gracefully
+            logger.warning(f"No FastMCP Context found for {func.__name__}")
+            return await func(*args, **kwargs)
+
+    return wrapper
+
+
+# ============================================================================
+# Logging Configuration
+# ============================================================================
+
+# Suppress deprecation warnings from dependencies
+# These are not from our code and will be fixed when dependencies update
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="websockets")
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="uvicorn.protocols.websockets")
+
+# Suppress urllib3 deprecation warning (used by kubernetes client)
+# Warning: HTTPResponse.getheaders() is deprecated in urllib3 v2.1.0
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="urllib3")
+warnings.filterwarnings("ignore", message=".*HTTPResponse.getheaders.*")
 
 # Configure logging
 logging.basicConfig(
@@ -179,6 +322,62 @@ def get_current_namespace() -> str:
 # ============================================================================
 # Utility Functions
 # ============================================================================
+
+def validate_rfc1123_name(name: str, resource_type: str = "resource") -> None:
+    """
+    Validate that a name conforms to RFC 1123 DNS label standard.
+
+    RFC 1123 requirements for Kubernetes resource names:
+    - Must be 63 characters or less
+    - Must contain only lowercase alphanumeric characters or '-'
+    - Must start with an alphanumeric character
+    - Must end with an alphanumeric character
+
+    Args:
+        name: The name to validate
+        resource_type: Type of resource (for error messages)
+
+    Raises:
+        ValueError: If the name doesn't conform to RFC 1123
+    """
+    if not name:
+        raise ValueError(f"{resource_type} name cannot be empty")
+
+    if len(name) > 63:
+        raise ValueError(
+            f"{resource_type} name '{name}' is too long ({len(name)} characters). "
+            f"RFC 1123 DNS labels must be 63 characters or less."
+        )
+
+    # Check pattern: lowercase alphanumeric or '-', must start and end with alphanumeric
+    import re
+    if not re.match(r'^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', name):
+        issues = []
+
+        if name[0] not in 'abcdefghijklmnopqrstuvwxyz0123456789':
+            issues.append("must start with a lowercase letter or number")
+
+        if len(name) > 1 and name[-1] not in 'abcdefghijklmnopqrstuvwxyz0123456789':
+            issues.append("must end with a lowercase letter or number")
+
+        invalid_chars = set(c for c in name if c not in 'abcdefghijklmnopqrstuvwxyz0123456789-')
+        if invalid_chars:
+            issues.append(f"contains invalid characters: {', '.join(sorted(invalid_chars))}")
+
+        if not any(c.islower() and c.isalpha() for c in name) and not any(c.isupper() for c in name):
+            # Check if there are uppercase letters
+            pass
+        elif any(c.isupper() for c in name):
+            issues.append("must be lowercase (uppercase letters are not allowed)")
+
+        raise ValueError(
+            f"{resource_type} name '{name}' is invalid. RFC 1123 DNS label requirements:\n"
+            f"  - Must contain only lowercase letters (a-z), numbers (0-9), and hyphens (-)\n"
+            f"  - Must start and end with a letter or number\n"
+            f"  - Must be 63 characters or less\n\n"
+            f"Issues found: {'; '.join(issues)}"
+        )
+
 
 def truncate_response(content: str, max_length: int = CHARACTER_LIMIT) -> str:
     """Truncate response content to stay within character limits."""
@@ -351,9 +550,10 @@ class CreateClusterInput(BaseModel):
     """Input for creating a new PostgreSQL cluster."""
     name: str = Field(
         ...,
-        description="Name for the new cluster. Must be a valid Kubernetes resource name.",
-        examples=["my-postgres-cluster", "production-db"],
-        pattern=r'^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+        description="Name for the new cluster. Must conform to RFC 1123 DNS label standard: lowercase letters (a-z), numbers (0-9), and hyphens (-) only; must start and end with a letter or number; max 63 characters.",
+        examples=["my-postgres-cluster", "production-db", "app-db-01"],
+        pattern=r'^[a-z0-9]([-a-z0-9]*[a-z0-9])?$',
+        max_length=63
     )
     instances: int = Field(
         3,
@@ -450,8 +650,10 @@ class CreateRoleInput(BaseModel):
     cluster_name: str = Field(..., description="Name of the PostgreSQL cluster.")
     role_name: str = Field(
         ...,
-        description="Name of the role to create.",
-        pattern=r'^[a-z_][a-z0-9_]*$'
+        description="Name of the role to create. Must conform to RFC 1123 DNS label standard (required for Kubernetes secret naming): lowercase letters (a-z), numbers (0-9), and hyphens (-) only; must start and end with a letter or number; max 63 characters.",
+        examples=["app-user", "readonly-user", "admin-01"],
+        pattern=r'^[a-z0-9]([-a-z0-9]*[a-z0-9])?$',
+        max_length=63
     )
     login: bool = Field(True, description="Allow role to log in. Default: true.")
     superuser: bool = Field(False, description="Grant superuser privileges. Default: false.")
@@ -518,8 +720,10 @@ class CreateDatabaseInput(BaseModel):
     cluster_name: str = Field(..., description="Name of the PostgreSQL cluster.")
     database_name: str = Field(
         ...,
-        description="Name of the database to create.",
-        pattern=r'^[a-z_][a-z0-9_]*$'
+        description="Name of the database to create. Must conform to RFC 1123 DNS label standard (required for Database CRD naming): lowercase letters (a-z), numbers (0-9), and hyphens (-) only; must start and end with a letter or number; max 63 characters.",
+        examples=["app-db", "analytics-db", "user-data"],
+        pattern=r'^[a-z0-9]([-a-z0-9]*[a-z0-9])?$',
+        max_length=63
     )
     owner: str = Field(..., description="Name of the role that will own the database.")
     reclaim_policy: Literal["retain", "delete"] = Field(
@@ -560,7 +764,9 @@ class DeleteDatabaseInput(BaseModel):
 # These functions are imported by both server files and decorated there
 # ============================================================================
 
+@with_mcp_context
 async def list_postgres_clusters(
+    context: MCPContext,
     namespace: Optional[str] = None,
     detail_level: Literal["concise", "detailed"] = "concise",
     format: Literal["text", "json"] = "text"
@@ -653,7 +859,9 @@ async def list_postgres_clusters(
 
 
 
+@with_mcp_context
 async def get_cluster_status(
+    context: MCPContext,
     name: str,
     namespace: Optional[str] = None,
     detail_level: Literal["concise", "detailed"] = "concise",
@@ -737,7 +945,9 @@ async def get_cluster_status(
 
 
 
+@with_mcp_context
 async def create_postgres_cluster(
+    context: MCPContext,
     name: str,
     instances: int = 3,
     storage_size: str = "10Gi",
@@ -816,6 +1026,9 @@ async def create_postgres_cluster(
         monitor the cluster until it reaches 'Cluster in healthy state' phase.
     """
     try:
+        # Validate cluster name conforms to RFC 1123
+        validate_rfc1123_name(name, "Cluster")
+
         # Infer namespace from context if not provided
         if namespace is None:
             namespace = get_current_namespace()
@@ -973,7 +1186,9 @@ kubectl get secret {cluster_name}-app -n {namespace} -o jsonpath='{{.data.passwo
 
 
 
+@with_mcp_context
 async def scale_postgres_cluster(
+    context: MCPContext,
     name: str,
     instances: int,
     namespace: Optional[str] = None,
@@ -1066,7 +1281,9 @@ get_cluster_status(namespace="{namespace}", name="{name}")
 
 
 
+@with_mcp_context
 async def delete_postgres_cluster(
+    context: MCPContext,
     name: str,
     confirm_deletion: bool = False,
     namespace: Optional[str] = None,
@@ -1247,7 +1464,9 @@ The cluster will no longer appear in list_postgres_clusters() once deletion is c
 
 
 
+@with_mcp_context
 async def list_postgres_roles(
+    context: MCPContext,
     cluster_name: str,
     namespace: Optional[str] = None,
     format: Literal["text", "json"] = "text"
@@ -1343,7 +1562,9 @@ async def list_postgres_roles(
 
 
 
+@with_mcp_context
 async def create_postgres_role(
+    context: MCPContext,
     cluster_name: str,
     role_name: str,
     login: bool = True,
@@ -1379,6 +1600,9 @@ async def create_postgres_role(
         If dry_run=True, returns a preview of the role definition.
     """
     try:
+        # Validate role name conforms to RFC 1123 (required for Kubernetes secret naming)
+        validate_rfc1123_name(role_name, "Role")
+
         if namespace is None:
             namespace = get_current_namespace()
 
@@ -1439,6 +1663,10 @@ To create this role, call create_postgres_role again with dry_run=False (or omit
 
         # Create Kubernetes secret to store the password
         secret_name = f"cnpg-{cluster_name}-user-{role_name}"
+
+        # Validate the resulting secret name conforms to RFC 1123
+        validate_rfc1123_name(secret_name, "Role secret")
+
         _, core_api = get_kubernetes_clients()
 
         secret_data = {
@@ -1527,7 +1755,9 @@ The CloudNativePG operator will reconcile this role in the database.
 
 
 
+@with_mcp_context
 async def update_postgres_role(
+    context: MCPContext,
     cluster_name: str,
     role_name: str,
     login: Optional[bool] = None,
@@ -1670,7 +1900,9 @@ The CloudNativePG operator will reconcile these changes in the database.
 
 
 
+@with_mcp_context
 async def delete_postgres_role(
+    context: MCPContext,
     cluster_name: str,
     role_name: str,
     namespace: Optional[str] = None,
@@ -1786,7 +2018,9 @@ The CloudNativePG operator will drop this role from the database.
 
 
 
+@with_mcp_context
 async def list_postgres_databases(
+    context: MCPContext,
     cluster_name: str,
     namespace: Optional[str] = None,
     format: Literal["text", "json"] = "text"
@@ -1881,7 +2115,9 @@ async def list_postgres_databases(
 
 
 
+@with_mcp_context
 async def create_postgres_database(
+    context: MCPContext,
     cluster_name: str,
     database_name: str,
     owner: str,
@@ -1908,11 +2144,17 @@ async def create_postgres_database(
         If dry_run=True, returns a preview of the Database CRD definition.
     """
     try:
+        # Validate database name conforms to RFC 1123 (required for Database CRD naming)
+        validate_rfc1123_name(database_name, "Database")
+
         if namespace is None:
             namespace = get_current_namespace()
 
         # Create a unique CRD name (cluster-database)
         crd_name = f"{cluster_name}-{database_name}"
+
+        # Validate the resulting CRD name also conforms to RFC 1123
+        validate_rfc1123_name(crd_name, "Database CRD")
 
         # Build the Database CRD
         database_crd = {
@@ -1990,7 +2232,9 @@ kubectl get database {crd_name} -n {namespace}
 
 
 
+@with_mcp_context
 async def delete_postgres_database(
+    context: MCPContext,
     cluster_name: str,
     database_name: str,
     namespace: Optional[str] = None,

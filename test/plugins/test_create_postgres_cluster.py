@@ -97,11 +97,12 @@ class CreatePostgresClusterTest(TestPlugin):
                 # Immediate check failed - this is expected, will retry with polling
                 pass
 
-            # Poll for cluster to be READY (retry up to 60 seconds)
+            # Poll for cluster to be READY (retry up to 180 seconds / 3 minutes)
+            # Initial cluster creation can take time for pod startup, image pull, DB init, etc.
             cluster_ready = False
             last_status_text = ""
-            max_wait_time = 60  # seconds
-            poll_interval = 3  # seconds
+            max_wait_time = 180  # seconds (3 minutes)
+            poll_interval = 5  # seconds
             attempts = max_wait_time // poll_interval
 
             for attempt in range(attempts):

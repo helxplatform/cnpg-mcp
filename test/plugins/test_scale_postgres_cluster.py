@@ -86,11 +86,12 @@ class ScalePostgresClusterTest(TestPlugin):
                     duration_ms=(time.time() - start_time) * 1000
                 )
 
-            # Poll for scaling to complete (wait up to 60 seconds)
+            # Poll for scaling to complete (wait up to 180 seconds / 3 minutes)
+            # Scaling can take time for pod startup, image pull, initialization, etc.
             scaling_complete = False
             last_status_text = ""
-            max_wait_time = 60  # seconds
-            poll_interval = 3  # seconds
+            max_wait_time = 180  # seconds (3 minutes)
+            poll_interval = 5  # seconds
             attempts = max_wait_time // poll_interval
 
             for attempt in range(attempts):
