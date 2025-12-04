@@ -36,7 +36,7 @@ spec:
     - host: {{ .Values.ingress.host | quote }}
       http:
         paths:
-{{- if .Values.testSidecar.enabled }}
+         {{- if .Values.testSidecar.enabled }}
           # Test endpoint - routes to sidecar container on test port
           - path: /test
             {{- if semverCompare ">=1.18-0" .Capabilities.KubeVersion.GitVersion }}
@@ -52,7 +52,7 @@ spec:
               serviceName: {{ $fullName }}
               servicePort: {{ .Values.service.testPort }}
               {{- end }}
-{{- end }}
+            {{- end }}
           # Main endpoint - all other paths route to main server
           - path: {{ .Values.ingress.path }}
             {{- if and .Values.ingress.pathType (semverCompare ">=1.18-0" .Capabilities.KubeVersion.GitVersion) }}
