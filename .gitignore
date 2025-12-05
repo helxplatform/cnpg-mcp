@@ -11,6 +11,7 @@ token.txt
 *.tgz
 tmp
 results.json
+Chart.lock
 
 # OS generated files #
 ######################

@@ -50,6 +50,10 @@ spec:
               readOnly: true
             # Mount Auth0 credentials secret
             - name: auth0-credentials
+              mountPath: /etc/mcp/secrets/auth0
+              readOnly: true
+            # Mount JWT signing key secret
+            - name: jwt-signing-key
               mountPath: /etc/mcp/secrets
               readOnly: true
 
@@ -76,7 +80,7 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
 
-{{- if .Values.testSidecar.enabled }}
+        {{- if .Values.testSidecar.enabled }}
         # Test sidecar container using OIDC authentication
         - name: {{ .Chart.Name }}-test
           securityContext:
@@ -100,7 +104,7 @@ spec:
               mountPath: /etc/mcp
               readOnly: true
             - name: auth0-credentials
-              mountPath: /etc/mcp/secrets
+              mountPath: /etc/mcp/secrets/auth0
               readOnly: true
 
           livenessProbe:
@@ -125,7 +129,7 @@ spec:
 
           resources:
             {{- toYaml .Values.testSidecar.resources | nindent 12 }}
-{{- end }}
+        {{- end }}
 
       # Define volumes for OIDC configuration
       volumes:
@@ -143,6 +147,15 @@ spec:
             items:
               - key: server-client-secret
                 path: server-client-secret
+        # Mount JWT signing key and storage encryption key secret
+        - name: jwt-signing-key
+          secret:
+            secretName: {{ .Values.jwt.secretName | default (printf "%s-jwt-signing-key" .Release.Name) }}
+            items:
+              - key: jwt-signing-key
+                path: jwt-signing-key
+              - key: storage-encryption-key
+                path: storage-encryption-key
 
       {{- with .Values.nodeSelector }}
       nodeSelector:
