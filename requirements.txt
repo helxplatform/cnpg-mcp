@@ -1,5 +1,6 @@
 # Core MCP Server dependencies
-fastmcp>=2.0.0
+fastmcp>=2.0.0  # MCP server framework
+py-key-value-aio[redis]  # Redis storage backend for OAuth session persistence
 
 # Kubernetes client
 kubernetes>=28.0.0

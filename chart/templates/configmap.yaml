@@ -31,7 +31,19 @@ data:
     # Secret name: {{ .Release.Name }}-auth0-credentials
     # Secret key: server-client-secret
     # FastMCP Auth0Provider uses this to authenticate with Auth0 during token exchange
-    client_secret_file: "/etc/mcp/secrets/server-client-secret"
+    client_secret_file: "/etc/mcp/secrets/auth0/server-client-secret"
+
+    # Path to JWT signing key file (mounted from Kubernetes Secret)
+    # Secret name: {{ .Values.jwt.secretName | default (printf "%s-jwt-signing-key" .Release.Name) }}
+    # Secret key: jwt-signing-key
+    # Used to sign MCP tokens issued to clients (required for multi-replica deployments)
+    jwt_signing_key_file: "/etc/mcp/secrets/jwt-signing-key"
+
+    # Path to storage encryption key file (mounted from Kubernetes Secret)
+    # Secret name: {{ .Values.jwt.secretName | default (printf "%s-jwt-signing-key" .Release.Name) }}
+    # Secret key: storage-encryption-key
+    # Used to encrypt OAuth tokens stored in Redis (required for multi-replica deployments)
+    storage_encryption_key_file: "/etc/mcp/secrets/storage-encryption-key"
 
     # ========================================================================
     # REQUIRED: Server Configuration
@@ -55,4 +67,16 @@ data:
     {{- if .Values.oidc.scope }}
     # Required OAuth2 scope (default: openid)
     scope: {{ .Values.oidc.scope | quote }}
+    {{- end }}
+
+    # ========================================================================
+    # Redis Configuration (OAuth Session Persistence)
+    # ========================================================================
+    {{- if .Values.redis.enabled }}
+    # Redis configuration for OAuth session persistence across restarts
+    # Without Redis, OAuth sessions are stored in-memory and lost on pod restart
+    redis:
+      host: "{{ .Release.Name }}-redis"
+      port: {{ .Values.redis.service.port | default 6379 }}
+      db: 0
     {{- end }}

@@ -84,6 +84,15 @@ tolerations: []
 
 affinity: {}
 
+# JWT Signing Key Secret
+# REQUIRED for production deployments (especially multi-replica)
+# Create using: python bin/create_jwt_secret.py --release-name <release-name>
+jwt:
+  # Name of the Kubernetes secret containing the JWT signing key
+  # Secret should have key: jwt-signing-key
+  # Default: {{ .Release.Name }}-jwt-signing-key
+  secretName: ""  # Leave empty to use default
+
 # OIDC/OAuth2 Authentication Configuration
 # REQUIRED for production HTTP mode deployment
 oidc:
@@ -144,3 +153,69 @@ testSidecar:
     # requests:
     #   cpu: 100m
     #   memory: 128Mi
+
+# Redis Configuration
+# Used for OAuth session persistence across restarts
+redis:
+  # Enable Redis deployment
+  enabled: true
+
+  # Redis architecture (standalone, replication, or cluster)
+  architecture: standalone
+
+  # Number of replicas (only for replication/cluster modes)
+  replicaCount: 1
+
+  # Redis server configuration (pass-through to redis.conf)
+  master:
+    configuration: |
+      maxmemory 256mb
+      maxmemory-policy allkeys-lru
+
+  # Redis resources
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+  # Persistence configuration
+  persistence:
+    enabled: true
+    storageClass: ""  # Use default storage class
+    accessMode: ReadWriteOnce
+    size: 1Gi
+
+  # Pod security context
+  podSecurityContext:
+    fsGroup: 999
+    runAsUser: 999
+    runAsGroup: 999
+    runAsNonRoot: true
+
+  # Container security context
+  containerSecurityContext:
+    runAsUser: 999
+    runAsGroup: 999
+    runAsNonRoot: true
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
+
+  # Service configuration
+  service:
+    type: ClusterIP
+    port: 6379
+
+  # Authentication
+  auth:
+    enabled: false
+    # For internal session storage, authentication is not required
+    # If enabled, password will be stored in secret: {{ .Release.Name }}-redis
+    password: ""
