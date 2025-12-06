@@ -2,28 +2,32 @@
 """
 Create Kubernetes Secrets for MCP Server
 
-Reads from auth0-config.json (single source of truth) and creates Kubernetes secrets.
+Creates all required secrets for the MCP server deployment:
+1. Auth0 credentials (from auth0-config.json)
+2. JWT signing key (auto-generated)
+3. Storage encryption key (auto-generated)
 
 Requirements:
-    pip install kubernetes
+    pip install kubernetes cryptography
 
 Usage:
-    # Create secrets in current context's namespace
-    python create_k8s_secrets.py
-
-    # Create in specific namespace
-    python create_k8s_secrets.py --namespace mcp
+    # Create all secrets
+    python create_secrets.py --namespace <namespace> --release-name <release-name>
 
     # Dry run
-    python create_k8s_secrets.py --dry-run
+    python create_secrets.py --namespace <namespace> --release-name <release-name> --dry-run
+
+    # Replace existing secrets
+    python create_secrets.py --namespace <namespace> --release-name <release-name> --replace
 
     # Specify config file location
-    python create_k8s_secrets.py --config-file ./auth0-config.json
+    python create_secrets.py --config-file ./auth0-config.json --release-name <release-name>
 """
 
 import os
 import sys
 import json
+import secrets
 import argparse
 import base64
 from typing import Dict, Any, Optional
@@ -37,9 +41,25 @@ except ImportError:
     sys.exit(1)
 
 
+def generate_jwt_signing_key() -> str:
+    """Generate a secure 256-bit JWT signing key."""
+    return secrets.token_hex(32)  # 32 bytes = 256 bits
+
+
+def generate_storage_encryption_key() -> bytes:
+    """Generate a secure Fernet encryption key for storage."""
+    try:
+        from cryptography.fernet import Fernet
+        return Fernet.generate_key()
+    except ImportError:
+        print("❌ cryptography package not installed")
+        print("   Install with: pip install cryptography")
+        sys.exit(1)
+
+
 class KubernetesSecretCreator:
     """Creates Kubernetes secrets from Auth0 configuration."""
-    
+
     def __init__(
         self,
         namespace: Optional[str] = None,
@@ -237,33 +257,34 @@ class KubernetesSecretCreator:
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="Create Kubernetes secrets from auth0-config.json",
+        description="Create all Kubernetes secrets for MCP Server deployment",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Create secrets in current context's namespace
-  python create_k8s_secrets.py
-
-  # Create in specific namespace
-  python create_k8s_secrets.py --namespace mcp
+  # Create all secrets
+  python create_secrets.py --namespace mcp --release-name my-release
 
   # Dry run
-  python create_k8s_secrets.py --dry-run
+  python create_secrets.py --namespace mcp --release-name my-release --dry-run
 
-  # Replace existing secrets
-  python create_k8s_secrets.py --replace
+  # Force replace existing secrets
+  python create_secrets.py --namespace mcp --release-name my-release --force
 
   # Specify config file location
-  python create_k8s_secrets.py --config-file ./config/auth0-config.json
+  python create_secrets.py --config-file ./config/auth0-config.json --release-name my-release
 
-Secret Created:
-  <release-name>-auth0-credentials
+Secrets Created:
+  1. <release-name>-auth0-credentials
      - server-client-id: Server client ID (for FastMCP)
      - server-client-secret: Server client secret (for FastMCP)
      - mgmt-client-id: Management API client ID (for scripts)
      - mgmt-client-secret: Management API client secret (for scripts)
      - auth0-domain: Auth0 domain
      - connection-id: Auth0 connection ID
+
+  2. <release-name>-jwt-signing-key
+     - jwt-signing-key: JWT signing key for MCP tokens (256-bit hex)
+     - storage-encryption-key: Fernet key for OAuth token encryption (base64)
         """
     )
     
@@ -282,15 +303,9 @@ Secret Created:
         help="Show what would be created without creating"
     )
     parser.add_argument(
-        "--replace",
+        "--force",
         action="store_true",
-        help="Replace secrets if they already exist"
-    )
-    parser.add_argument(
-        "--create-namespace",
-        action="store_true",
-        help="Create namespace if it doesn't exist",
-        default=True
+        help="Force replace secrets if they already exist"
     )
     parser.add_argument(
         "--release-name",
@@ -342,7 +357,7 @@ Secret Created:
     print("=" * 70)
     print(f"Namespace:        {creator.namespace}")
     print(f"Dry Run:          {args.dry_run}")
-    print(f"Replace:          {args.replace}")
+    print(f"Force Replace:    {args.force}")
     print()
     
     # Prepare secret data
@@ -400,27 +415,50 @@ Secret Created:
             sys.exit(0)
     
     print()
-    
-    if args.create_namespace:
-        if not creator.create_namespace():
-            sys.exit(1)
-        print()
-    
+
     success = True
 
     # Generate secret name from release name
     secret_name = f"{args.release_name}-auth0-credentials"
 
-    # Create single secret with all credentials
+    # Create Auth0 credentials secret
     if not creator.create_secret(
         name=secret_name,
         data=mgmt_data,
         labels={"component": "auth0-credentials"},
-        replace=args.replace
+        replace=args.force
     ):
         success = False
     print()
-    
+
+    # Generate and create JWT signing key and storage encryption key secret
+    print("=" * 70)
+    print("🔐 Creating JWT Signing Key and Storage Encryption Key Secret")
+    print("=" * 70)
+    print()
+
+    jwt_key = generate_jwt_signing_key()
+    storage_key = generate_storage_encryption_key()
+
+    print(f"✅ Generated JWT signing key: {jwt_key[:16]}...{jwt_key[-16:]}")
+    print(f"✅ Generated storage encryption key: {storage_key[:16]}...{storage_key[-16:]}")
+    print()
+
+    jwt_secret_name = f"{args.release_name}-jwt-signing-key"
+    jwt_secret_data = {
+        "jwt-signing-key": jwt_key,
+        "storage-encryption-key": base64.b64encode(storage_key).decode()
+    }
+
+    if not creator.create_secret(
+        name=jwt_secret_name,
+        data=jwt_secret_data,
+        labels={"component": "jwt-signing-key"},
+        replace=args.force
+    ):
+        success = False
+    print()
+
     print("=" * 70)
     
     if success:
@@ -429,14 +467,16 @@ Secret Created:
         print()
         print("📋 Next Steps:")
         print()
-        print("1. Secret created:")
-        print(f"   {secret_name}")
+        print("1. Secrets created:")
+        print(f"   {secret_name} (Auth0 credentials)")
+        print(f"   {jwt_secret_name} (JWT signing key + storage encryption key)")
         print()
         print("2. Deploy your MCP server:")
-        print(f"   helm upgrade --install {args.release_name} ./chart -n {creator.namespace} -f auth0-values.yaml")
+        print(f"   helm upgrade --install {args.release_name} ./chart -n {creator.namespace}")
         print()
-        print("3. Verify secret:")
+        print("3. Verify secrets:")
         print(f"   kubectl describe secret {secret_name} -n {creator.namespace}")
+        print(f"   kubectl describe secret {jwt_secret_name} -n {creator.namespace}")
         print()
     else:
         print("❌ Some secrets failed to create")

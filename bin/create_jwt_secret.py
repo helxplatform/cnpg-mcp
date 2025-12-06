@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
 """
+⚠️  DEPRECATED: This script has been merged into create_secrets.py
+
+Use create_secrets.py instead, which creates all required secrets:
+  python bin/create_secrets.py --namespace <namespace> --release-name <release-name>
+
+---
+
 Create Kubernetes Secret for MCP JWT Signing Key
 
 Generates a secure 256-bit JWT signing key and stores it in a Kubernetes secret.
